@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Brash3D Live Shopping
 
-## Getting Started
+Brash3D is a Next.js MVP for booking a live outlet-shopping session, managing it from a seller dashboard, and following the cart and payment progress from a customer view.
 
-First, run the development server:
+## What is included
+
+- Customer booking from today through the end of next month.
+- One-hour slots from 9:00 AM to 6:00 PM at each configured demo outlet.
+- Booked slots stay visible and disabled.
+- Seller dashboard with bookings, customers, sessions, tables, row actions, and pagination.
+- Seller-created bookings and a live product-entry panel.
+- Customer live cart, order timeline, and simulated 65/35 payment flow.
+- Shared shadcn/ui components with neutral light and dark themes.
+
+## Run locally
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). The seller dashboard is available at [http://localhost:3000/seller](http://localhost:3000/seller).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Quality checks
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run lint
+npm run build
+```
 
-## Learn More
+## Documentation
 
-To learn more about Next.js, take a look at the following resources:
+- [Implementation status](docs/IMPLEMENTATION_STATUS.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Testing guide](docs/TESTING.md)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Current limitation
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+This is a demo MVP. Bookings, sessions, carts, and payments are held in memory, so they reset when the server restarts. Supabase persistence, Stripe payment processing, WhatsApp delivery, and courier integrations remain production work.
