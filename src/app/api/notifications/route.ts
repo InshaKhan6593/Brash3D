@@ -57,3 +57,34 @@ export async function PATCH(request: Request) {
   if (!result.rowCount) return NextResponse.json({ error: "Notification not found" }, { status: 404 })
   return NextResponse.json({ success: true })
 }
+
+export async function DELETE(request: Request) {
+  if (!requestHasSameOrigin(request)) {
+    return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
+  }
+  const staff = await requireStaff(["admin", "seller"])
+  if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+  const body = await request.json().catch(() => ({})) as { id?: unknown; all?: unknown }
+  const sellerId = staff.role === "seller" ? staff.sellerId : null
+
+  if (typeof body.id === "string" && body.id) {
+    const result = await query(`
+      DELETE FROM staff_notifications
+      WHERE id::text = $1
+        AND ($2::uuid IS NULL OR seller_id = $2::uuid)
+    `, [body.id, sellerId])
+    if (!result.rowCount) return NextResponse.json({ error: "Notification not found" }, { status: 404 })
+    return NextResponse.json({ success: true, cleared: 1 })
+  }
+
+  if (body.all !== true) {
+    return NextResponse.json({ error: "Provide a notification ID or set all to true" }, { status: 400 })
+  }
+
+  const result = await query(`
+    DELETE FROM staff_notifications
+    WHERE ($1::uuid IS NULL OR seller_id = $1::uuid)
+  `, [sellerId])
+  return NextResponse.json({ success: true, cleared: result.rowCount || 0 })
+}

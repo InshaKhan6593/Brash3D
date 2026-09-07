@@ -7,10 +7,10 @@ Brash3D is a Next.js MVP for booking a live outlet-shopping session, managing it
 - Customer booking from today through the end of next month.
 - One-hour slots from 9:00 AM to 6:00 PM at each configured demo outlet.
 - Booked slots stay visible and disabled.
-- Seller dashboard with bookings, customers, sessions, tables, row actions, and pagination.
+- Seller dashboard with bookings, customers, compact session tables, row actions, pagination, and a notification center.
 - Seller-created bookings and a live product-entry panel.
 - Customer live cart, order timeline, and Stripe-backed 65/35 payment flow.
-- USA seller/admin workflow for consolidated-box dispatch, plus a Colombia receiving manifest, final collection, and delivery confirmation.
+- USA seller/admin workflow for shipment-code creation, assignment to consolidated dispatch boxes, dispatch summaries with confirmation, plus a Colombia receiving manifest, final collection, and delivery confirmation.
 - Shared shadcn/ui components with neutral light and dark themes.
 
 ## Local setup

@@ -10,13 +10,13 @@ import {
   Clock3,
   CreditCard,
   MapPin,
-  MessageCircle,
   Package,
   ReceiptText,
   ShoppingBag,
   Truck,
 } from "lucide-react"
 import { CustomerHeader } from "@/components/customer-header"
+import { WhatsAppIcon } from "@/components/whatsapp-icon"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -172,7 +172,7 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
                 <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Appointment</p><p className="mt-1 font-semibold">{scheduledAt.toLocaleString(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })}</p></div>
                 <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Outlet</p><p className="mt-1 font-semibold">{session.outlet || "Nike Sawgrass"}</p><p className="text-sm text-muted-foreground">With {session.vendedor.nombre}</p></div>
                 <div className="rounded-md bg-muted p-4 sm:col-span-2"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">Booking payment</p><p className="text-sm text-muted-foreground">Your appointment is secured.</p></div><Badge variant="secondary"><CheckCircle2 />$20 paid</Badge></div></div>
-                <Button size="lg" className="sm:col-span-2" disabled><MessageCircle />{scheduledTimePassed ? "Waiting for your shopper to start" : "Join session when your shopper starts it"}</Button>
+                <Button size="lg" className="sm:col-span-2" disabled><WhatsAppIcon />{scheduledTimePassed ? "Waiting for your shopper to start" : "Join session when your shopper starts it"}</Button>
                 <p className="text-center text-xs text-muted-foreground sm:col-span-2">Keep this page open. It will switch to your live cart automatically.</p>
               </CardContent>
             </Card>
@@ -195,7 +195,7 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">Shopping with {session.vendedor.nombre} · Order {session.id.slice(-8).toUpperCase()}</p>
           </div>
-          {isLive && <Button variant="outline" disabled><MessageCircle />WhatsApp call active</Button>}
+          {isLive && <Button variant="outline" disabled><WhatsAppIcon />WhatsApp call active</Button>}
         </div>
 
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.55fr)]">
@@ -204,7 +204,7 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
               <Card>
                 <CardContent className="flex flex-col justify-between gap-4 py-5 sm:flex-row sm:items-center">
                   <div className="flex items-center gap-3">
-                    <span className="flex size-10 items-center justify-center rounded-full bg-muted"><MessageCircle /></span>
+                    <span className="flex size-10 items-center justify-center rounded-full bg-muted"><WhatsAppIcon className="size-5" /></span>
                     <div><p className="font-semibold">Live call in progress</p><p className="text-sm text-muted-foreground">Products update automatically while you shop.</p></div>
                   </div>
                   <Badge className="w-fit">Connected</Badge>
@@ -296,7 +296,7 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
             <Card>
               <CardContent className="flex gap-3 py-5">
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10"><MapPin className="size-5" /></span>
-                <div><p className="font-medium">Shipping to Colombia</p><p className="text-sm text-muted-foreground">{session.envio ? `Current status: ${session.envio.estado.replaceAll("_", " ")}.` : "Tracking details will appear after your initial payment is confirmed and staff creates the shipment."}</p></div>
+                <div><p className="font-medium">Shipping to Colombia</p><p className="text-sm text-muted-foreground">{session.envio ? `Current status: ${session.envio.estado.replaceAll("_", " ")}.` : "Tracking details will appear after your initial payment is confirmed and staff creates the shipment."}</p>{session.envio?.labelCode && <p className="mt-2 text-sm"><span className="text-muted-foreground">Shipment code: </span><span className="font-mono font-semibold">{session.envio.labelCode}</span></p>}</div>
               </CardContent>
             </Card>
           </aside>
