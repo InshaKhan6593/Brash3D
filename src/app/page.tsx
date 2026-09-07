@@ -1,8 +1,7 @@
 "use client"
 
 import { FormEvent, useEffect, useMemo, useState } from "react"
-import Link from "next/link"
-import { CalendarDays, CheckCircle2, Clock, ShoppingBag } from "lucide-react"
+import { CalendarDays } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -11,8 +10,7 @@ import { CustomerHeader } from "@/components/customer-header"
 import { TimeSlot } from "@/lib/types"
 
 interface BookingResult {
-  booking: { id: string; fecha: string; hora: string }
-  session: { id: string }
+  checkoutUrl: string
 }
 
 export default function Home() {
@@ -22,7 +20,6 @@ export default function Home() {
   const [loadingSlots, setLoadingSlots] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
-  const [result, setResult] = useState<BookingResult | null>(null)
 
   useEffect(() => {
     async function loadSlots() {
@@ -75,7 +72,7 @@ export default function Home() {
       })
       const data = (await response.json()) as BookingResult & { error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to complete the booking")
-      setResult(data)
+      window.location.assign(data.checkoutUrl)
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Unable to complete the booking")
     } finally {
@@ -83,68 +80,27 @@ export default function Home() {
     }
   }
 
-  if (result) {
-    return (
-      <div className="min-h-screen">
-        <CustomerHeader />
-        <main className="px-4 py-12">
-        <Card className="mx-auto max-w-xl">
-          <CardHeader className="text-center">
-            <CheckCircle2 className="mx-auto mb-3 size-12" />
-            <CardTitle>Booking confirmed</CardTitle>
-            <CardDescription>
-              Your $20 booking fee is simulated in this demo. Your live shopping session is ready.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="rounded-lg bg-muted p-4 text-center text-sm">
-              <p className="font-semibold">
-                {new Date(result.booking.fecha).toLocaleDateString("en-US", {
-                  weekday: "long",
-                  month: "long",
-                  day: "numeric",
-                })} at {result.booking.hora}
-              </p>
-              <p className="text-muted-foreground">A WhatsApp session link will be shared before the appointment.</p>
-            </div>
-            <Button asChild className="w-full" size="lg">
-              <Link href={`/session/${result.session.id}`}>Open customer session</Link>
-            </Button>
-            <Button asChild className="w-full" variant="outline">
-              <Link href={`/seller?sessionId=${result.session.id}`}>Open seller panel</Link>
-            </Button>
-            <p className="pt-2 text-center text-xs text-muted-foreground">
-              Open the two links in separate tabs to test live cart synchronization.
-            </p>
-          </CardContent>
-        </Card>
-        </main>
-      </div>
-    )
-  }
-
   return (
     <div className="min-h-screen">
       <CustomerHeader />
-      <main className="px-4 py-10">
-      <div className="mx-auto max-w-5xl space-y-8">
-        <header className="space-y-3 text-center">
-          <ShoppingBag className="mx-auto size-10" />
-          <h1 className="text-3xl font-bold tracking-tight">Book your live shopping session</h1>
-          <p className="mx-auto max-w-2xl text-muted-foreground">
-            Choose a Miami outlet time, meet your personal shopper on WhatsApp, and watch your cart update live.
+      <main className="px-4 py-4 sm:py-5">
+      <div className="mx-auto max-w-5xl space-y-4">
+        <header className="space-y-1 text-center">
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Book your live shopping session</h1>
+          <p className="mx-auto max-w-2xl text-sm text-muted-foreground">
+            Choose a time at Nike Sawgrass, meet your personal shopper on WhatsApp, and watch your cart update live.
           </p>
         </header>
 
         <form onSubmit={submitBooking} className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
           <Card>
-            <CardHeader>
+            <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-xl">
                 <CalendarDays className="size-5" /> Choose date and time
               </CardTitle>
-              <CardDescription>Pick a date first, then select one available Miami time.</CardDescription>
+              <CardDescription>Pick a date, then select one available Nike Sawgrass time.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent className="space-y-3">
               {loadingSlots && <p className="text-sm text-muted-foreground">Loading available times...</p>}
               {!loadingSlots && (
                 <>
@@ -155,20 +111,20 @@ export default function Home() {
                       type="date"
                       min={dates[0]}
                       max={dates[dates.length - 1]}
+                      className="h-9"
                       value={activeDate}
                       onChange={(event) => {
                         setSelectedDate(event.target.value)
                         setSelectedSlotId("")
                       }}
                     />
-                    <p className="text-xs text-muted-foreground">Bookings are open from today through the end of next month.</p>
                   </div>
-                  <section className="space-y-3 pt-2">
+                  <section className="space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <h2 className="font-semibold">{new Date(`${activeDate}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</h2>
                       <span className="text-xs text-muted-foreground">{availableCount} available</span>
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                     {activeSlots.map((slot) => (
                       <Button
                         key={slot.id}
@@ -176,9 +132,10 @@ export default function Home() {
                         variant={selectedSlotId === slot.id ? "default" : "outline"}
                         disabled={!slot.available}
                         onClick={() => setSelectedSlotId(slot.id)}
-                        className="h-auto justify-start px-4 py-3 text-left"
+                        className="h-12 flex-col justify-center gap-0 px-2 leading-tight"
                       >
-                        <span><span className="flex items-center gap-1 font-medium"><Clock className="size-3" />{slot.time}</span><span className="mt-1 block truncate text-xs opacity-75">{slot.outlet}{!slot.available && " · Booked"}</span></span>
+                        <span>{slot.time}</span>
+                        <span className="text-[10px] font-normal opacity-70">{slot.available ? "Available" : "Booked"}</span>
                       </Button>
                     ))}
                     </div>
@@ -189,13 +146,13 @@ export default function Home() {
           </Card>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="pb-3">
               <CardTitle className="text-xl">Your details</CardTitle>
               <CardDescription>The reservation fee is $20 USD.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-1">
               {selectedSlot && (
-                <div className="rounded-md bg-muted p-3 text-sm">
+                <div className="rounded-md bg-muted p-3 text-sm sm:col-span-2 lg:col-span-1">
                   <p className="font-semibold">Selected appointment</p>
                   <p className="text-muted-foreground">
                     {new Date(`${selectedSlot.date}T12:00:00`).toLocaleDateString("en-US", { month: "long", day: "numeric" })}, {selectedSlot.time} · {selectedSlot.outlet}
@@ -204,26 +161,26 @@ export default function Home() {
               )}
               <div className="space-y-2">
                 <Label htmlFor="nombre">Full name</Label>
-                <Input id="nombre" name="nombre" required placeholder="Camila Rodriguez" />
+                <Input id="nombre" name="nombre" required placeholder="Camila Rodriguez" className="h-9" />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input id="email" name="email" type="email" required placeholder="camila@example.com" />
+                <Input id="email" name="email" type="email" required placeholder="camila@example.com" className="h-9" />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="telefono">WhatsApp number</Label>
-                <Input id="telefono" name="telefono" required placeholder="+57 300 123 4567" />
+                <Input id="telefono" name="telefono" required placeholder="+57 300 123 4567" className="h-9" />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="ciudad">City</Label>
-                <Input id="ciudad" name="ciudad" required placeholder="Bogota" />
+                <Input id="ciudad" name="ciudad" required placeholder="Bogota" className="h-9" />
               </div>
-              {error && <p className="text-sm text-destructive">{error}</p>}
-              <Button className="w-full" size="lg" disabled={!selectedSlotId || submitting}>
-                {submitting ? "Confirming..." : "Pay $20 and confirm booking"}
+              {error && <p className="text-sm text-destructive sm:col-span-2 lg:col-span-1">{error}</p>}
+              <Button className="w-full sm:col-span-2 lg:col-span-1" size="lg" disabled={!selectedSlotId || submitting}>
+                {submitting ? "Opening secure checkout..." : "Pay $20 and reserve slot"}
               </Button>
-              <p className="text-center text-xs text-muted-foreground">
-                Payment is simulated until Stripe credentials are connected.
+              <p className="text-center text-xs text-muted-foreground sm:col-span-2 lg:col-span-1">
+                Stripe securely processes your payment. The slot is held for 15 minutes.
               </p>
             </CardContent>
           </Card>

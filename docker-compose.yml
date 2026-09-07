@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: brash3d-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: brash3d
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d brash3d"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - brash3d-network
+
+volumes:
+  postgres_data:
+
+networks:
+  brash3d-network:

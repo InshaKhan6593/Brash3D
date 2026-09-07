@@ -1,293 +1,805 @@
-import {
-  Cliente,
-  Envio,
-  EnvioEstado,
-  Producto,
-  Reserva,
-  SesionCompra,
-  TimeSlot,
-  Vendedor,
-} from "@/lib/types"
+import "server-only"
 
-interface StoreState {
-  sessions: Map<string, SesionCompra>
-  bookings: Map<string, Reserva>
-  envios: Map<string, Envio>
-  timeSlots: TimeSlot[]
-  slotVersion?: number
+import type { PoolClient, QueryResult, QueryResultRow } from "pg"
+import { generateCustomerToken } from "@/lib/auth"
+import { query, transaction } from "@/lib/db"
+import type { Cliente, EnvioEstado, Producto, Reserva, SesionCompra, TimeSlot, Vendedor } from "@/lib/types"
+
+interface SessionRow extends QueryResultRow {
+  id: string
+  reserva_id: string
+  vendedor_id: string
+  vendedor_nombre: string
+  vendedor_email: string
+  tienda_asignada: string | null
+  cliente_id: string
+  cliente_nombre: string
+  cliente_email: string
+  cliente_telefono: string
+  cliente_ciudad: string | null
+  cliente_pais: string
+  fecha_inicio: Date
+  started_at: Date | null
+  fecha_fin: Date | null
+  fecha_hora_programada: Date
+  booking_estado: Reserva["estado"]
+  booking_fee: string
+  fecha_programada: string | null
+  hora_programada: string | null
+  estado: SesionCompra["estado"]
+  subtotal: string
+  impuesto: string
+  comision: string
+  total: string
+  payment_intent_65_id: string | null
+  payment_intent_35_id: string | null
+  monto_pagado_65: string
+  monto_pagado_35: string
+  direccion_entrega_sesion: string | null
+  ciudad_entrega_sesion: string | null
+  direccion_confirmada_at: Date | null
+  envio_id: string | null
+  caja_id: string | null
+  envio_estado: EnvioEstado | null
+  etiqueta_codigo: string | null
+  direccion_entrega: string | null
+  ciudad_entrega: string | null
+  tracking_number: string | null
+  transportadora: string | null
+  fecha_envio: Date | null
+  fecha_entrega_estimada: Date | null
+  fecha_entrega_real: Date | null
+  costo_envio: string | null
 }
 
-const SLOT_VERSION = 2
-
-const sellers: Vendedor[] = [
-  { id: "ven-maria", nombre: "Maria Garcia", email: "maria@brash3d.com", tiendaAsignada: "Sawgrass Mills" },
-  { id: "ven-juan", nombre: "Juan Perez", email: "juan@brash3d.com", tiendaAsignada: "Dolphin Mall" },
-]
-
-function formatSlotDate(date: Date): string {
-  return date.toISOString().slice(0, 10)
+interface ProductRow extends QueryResultRow {
+  id: string
+  sesion_id: string
+  nombre_producto: string
+  sku: string | null
+  precio_unitario: string
+  cantidad: number
+  notas_vendedor: string | null
+  url_imagen: string | null
+  added_at: Date
 }
 
-function generateTimeSlots(): TimeSlot[] {
-  const slots: TimeSlot[] = []
-  const start = new Date()
-  start.setHours(12, 0, 0, 0)
-  const end = new Date(start.getFullYear(), start.getMonth() + 2, 0, 12, 0, 0, 0)
+type QueryExecutor = <T extends QueryResultRow>(
+  text: string,
+  values?: unknown[]
+) => Promise<QueryResult<T>>
 
-  for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
-    for (let hour = 9; hour <= 18; hour += 1) {
-      const suffix = hour >= 12 ? "PM" : "AM"
-      const displayHour = hour > 12 ? hour - 12 : hour
-      const time = `${displayHour}:00 ${suffix}`
-      for (const seller of sellers) {
-        slots.push({
-          id: `slot-${formatSlotDate(date)}-${hour}-${seller.id}`,
-          date: formatSlotDate(date),
-          time,
-          available: true,
-          sellerId: seller.id,
-          sellerName: seller.nombre,
-          outlet: seller.tiendaAsignada,
-        })
-      }
-    }
-  }
-
-  return slots
+function clientQuery(client: PoolClient): QueryExecutor {
+  return <T extends QueryResultRow>(text: string, values: unknown[] = []) =>
+    client.query<T>(text, values)
 }
 
-const globalStore = globalThis as typeof globalThis & {
-  __brash3dDemoStore?: StoreState
+const SESSION_SELECT = `
+  SELECT sc.id::text, sc.reserva_id::text, sc.vendedor_id::text,
+    v.nombre AS vendedor_nombre, v.email AS vendedor_email, v.tienda_asignada,
+    sc.cliente_id::text, c.nombre AS cliente_nombre, c.email AS cliente_email,
+    c.telefono AS cliente_telefono, c.ciudad AS cliente_ciudad, c.pais AS cliente_pais,
+    sc.fecha_inicio, sc.started_at, sc.fecha_fin, r.fecha_hora AS fecha_hora_programada,
+    r.estado AS booking_estado, r.monto_reserva::text AS booking_fee,
+    r.fecha_hora::date::text AS fecha_programada,
+    to_char(d.hora_inicio, 'HH24:MI') AS hora_programada, sc.estado,
+    sc.subtotal::text, sc.impuesto::text, sc.comision::text, sc.total::text,
+    sc.payment_intent_65_id, sc.payment_intent_35_id,
+    sc.monto_pagado_65::text, sc.monto_pagado_35::text,
+    sc.direccion_entrega AS direccion_entrega_sesion,
+    sc.ciudad_entrega AS ciudad_entrega_sesion, sc.direccion_confirmada_at,
+    e.id::text AS envio_id, e.caja_id::text, e.estado AS envio_estado, e.etiqueta_codigo,
+    e.direccion_entrega, e.ciudad_entrega, e.tracking_number,
+    e.transportadora, e.fecha_envio, e.fecha_entrega_estimada,
+    e.fecha_entrega_real, e.costo_envio::text
+  FROM sesiones_compra sc
+  JOIN reservas r ON r.id = sc.reserva_id
+  JOIN disponibilidad d ON d.id = r.disponibilidad_id
+  JOIN clientes c ON c.id = sc.cliente_id
+  JOIN vendedores v ON v.id = sc.vendedor_id
+  LEFT JOIN envios e ON e.sesion_id = sc.id`
+
+function displayTime(value: string): string {
+  const hours = Number(value.split(":")[0])
+  return `${hours === 0 ? 12 : hours > 12 ? hours - 12 : hours}:00 ${hours >= 12 ? "PM" : "AM"}`
 }
 
-const store = globalStore.__brash3dDemoStore ?? {
-  sessions: new Map<string, SesionCompra>(),
-  bookings: new Map<string, Reserva>(),
-  envios: new Map<string, Envio>(),
-  timeSlots: generateTimeSlots(),
-  slotVersion: SLOT_VERSION,
-}
-
-globalStore.__brash3dDemoStore = store
-
-if (store.slotVersion !== SLOT_VERSION || store.timeSlots.length < 100) {
-  const bookedSlots = new Set(
-    [...store.sessions.values()]
-      .filter((session) => session.fechaProgramada && session.horaProgramada)
-      .map((session) => `${formatSlotDate(new Date(session.fechaProgramada!))}|${session.horaProgramada}|${session.outlet || session.vendedor.tiendaAsignada}`)
-  )
-  store.timeSlots = generateTimeSlots().map((slot) => ({
-    ...slot,
-    available: !bookedSlots.has(`${slot.date}|${slot.time}|${slot.outlet}`),
-  }))
-  store.slotVersion = SLOT_VERSION
-}
-
-function createId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID()}`
-}
-
-function copySession(session: SesionCompra): SesionCompra {
+function mapProduct(row: ProductRow): Producto {
   return {
-    ...session,
-    cliente: { ...session.cliente },
-    vendedor: { ...session.vendedor },
-    productos: session.productos.map((product) => ({ ...product })),
+    id: row.id,
+    nombre: row.nombre_producto,
+    sku: row.sku || undefined,
+    precio: Number(row.precio_unitario),
+    cantidad: row.cantidad,
+    notas: row.notas_vendedor || undefined,
+    urlImagen: row.url_imagen || undefined,
+    addedAt: new Date(row.added_at),
   }
 }
 
-export function getTimeSlots(): TimeSlot[] {
-  return store.timeSlots.map((slot) => ({ ...slot }))
-}
-
-export function createBooking(cliente: Cliente, slotId: string): Reserva {
-  const slot = store.timeSlots.find((candidate) => candidate.id === slotId)
-
-  if (!slot || !slot.available) {
-    throw new Error("SLOT_NOT_AVAILABLE")
+function mapSession(row: SessionRow, products: Producto[]): SesionCompra {
+  const vendedor: Vendedor = {
+    id: row.vendedor_id,
+    nombre: row.vendedor_nombre,
+    email: row.vendedor_email,
+    tiendaAsignada: row.tienda_asignada || undefined,
+  }
+  const cliente: Cliente = {
+    id: row.cliente_id,
+    nombre: row.cliente_nombre,
+    email: row.cliente_email,
+    telefono: row.cliente_telefono,
+    ciudad: row.cliente_ciudad || undefined,
+    pais: row.cliente_pais,
   }
 
-  slot.available = false
-  const booking: Reserva = {
-    id: createId("res"),
-    clienteId: cliente.id,
-    cliente,
-    fecha: new Date(`${slot.date}T12:00:00`),
-    hora: slot.time,
-    estado: "confirmada",
-    montoReserva: 20,
-    createdAt: new Date(),
-  }
-
-  store.bookings.set(booking.id, booking)
-  return { ...booking, cliente: { ...booking.cliente } }
-}
-
-export function getBooking(id: string): Reserva | null {
-  const booking = store.bookings.get(id)
-  return booking ? { ...booking, cliente: { ...booking.cliente } } : null
-}
-
-export function createSession(
-  reservaId: string,
-  vendedor: Vendedor,
-  cliente: Cliente,
-  schedule?: { fecha: Date; hora: string; outlet?: string }
-): SesionCompra {
-  const session: SesionCompra = {
-    id: createId("ses"),
-    reservaId,
-    vendedorId: vendedor.id,
+  return {
+    id: row.id,
+    reservaId: row.reserva_id,
+    vendedorId: row.vendedor_id,
     vendedor,
-    clienteId: cliente.id,
+    clienteId: row.cliente_id,
     cliente,
-    fechaInicio: new Date(),
-    fechaProgramada: schedule?.fecha,
-    horaProgramada: schedule?.hora,
-    outlet: schedule?.outlet,
-    estado: "en_progreso",
-    productos: [],
-    subtotal: 0,
-    impuesto: 0,
-    comision: 0,
-    total: 0,
-    montoPagado65: 0,
-    montoPagado35: 0,
+    fechaInicio: new Date(row.fecha_inicio),
+    startedAt: row.started_at ? new Date(row.started_at) : undefined,
+    fechaProgramada: row.fecha_programada ? new Date(`${row.fecha_programada}T12:00:00`) : undefined,
+    fechaHoraProgramada: new Date(row.fecha_hora_programada),
+    horaProgramada: row.hora_programada ? displayTime(row.hora_programada) : undefined,
+    bookingEstado: row.booking_estado,
+    bookingFee: Number(row.booking_fee),
+    outlet: row.tienda_asignada || undefined,
+    fechaFin: row.fecha_fin ? new Date(row.fecha_fin) : undefined,
+    estado: row.estado,
+    productos: products,
+    subtotal: Number(row.subtotal),
+    impuesto: Number(row.impuesto),
+    comision: Number(row.comision),
+    total: Number(row.total),
+    paymentIntent65Id: row.payment_intent_65_id || undefined,
+    paymentIntent35Id: row.payment_intent_35_id || undefined,
+    montoPagado65: Number(row.monto_pagado_65),
+    montoPagado35: Number(row.monto_pagado_35),
+    deliveryAddress: row.direccion_entrega_sesion || undefined,
+    deliveryCity: row.ciudad_entrega_sesion || undefined,
+    deliveryAddressConfirmedAt: row.direccion_confirmada_at ? new Date(row.direccion_confirmada_at) : undefined,
+    envio: row.envio_id && row.envio_estado ? {
+      id: row.envio_id,
+      sesionId: row.id,
+      cajaId: row.caja_id || undefined,
+      labelCode: row.etiqueta_codigo || undefined,
+      deliveryAddress: row.direccion_entrega || undefined,
+      deliveryCity: row.ciudad_entrega || undefined,
+      trackingNumber: row.tracking_number || undefined,
+      transportadora: row.transportadora || undefined,
+      fechaEnvio: row.fecha_envio ? new Date(row.fecha_envio) : undefined,
+      fechaEntregaEstimada: row.fecha_entrega_estimada ? new Date(row.fecha_entrega_estimada) : undefined,
+      fechaEntregaReal: row.fecha_entrega_real ? new Date(row.fecha_entrega_real) : undefined,
+      estado: row.envio_estado,
+      costoEnvio: Number(row.costo_envio || 0),
+    } : undefined,
   }
-
-  store.sessions.set(session.id, session)
-  return copySession(session)
 }
 
-export function createSessionForBooking(booking: Reserva, slotId: string): SesionCompra {
-  const slot = store.timeSlots.find((candidate) => candidate.id === slotId)
-  const seller = sellers.find((candidate) => candidate.id === slot?.sellerId) ?? sellers[0]
-  return createSession(booking.id, seller, booking.cliente, {
-    fecha: booking.fecha,
-    hora: booking.hora,
-    outlet: slot?.outlet,
+async function ensureAvailability(): Promise<void> {
+  await query(`
+    INSERT INTO disponibilidad (vendedor_id, fecha, hora_inicio, hora_fin, disponible)
+    SELECT v.id, day::date, make_time(hour, 0, 0), make_time(hour + 1, 0, 0), TRUE
+    FROM vendedores v
+    CROSS JOIN generate_series(
+      current_date,
+      (date_trunc('month', current_date) + interval '2 months - 1 day')::date,
+      interval '1 day'
+    ) day
+    CROSS JOIN generate_series(9, 18) hour
+    WHERE v.activo = true
+    ON CONFLICT (vendedor_id, fecha, hora_inicio) DO NOTHING
+  `)
+}
+
+export async function getTimeSlots(): Promise<TimeSlot[]> {
+  await ensureAvailability()
+  await releaseExpiredBookingHolds()
+  const result = await query<{
+    id: string
+    date: string
+    start_time: string
+    available: boolean
+    seller_id: string
+    seller_name: string
+    outlet: string | null
+  }>(`
+    SELECT d.id::text, d.fecha::text AS date, to_char(d.hora_inicio, 'HH24:MI') AS start_time,
+      d.disponible AS available, v.id::text AS seller_id, v.nombre AS seller_name,
+      v.tienda_asignada AS outlet
+    FROM disponibilidad d
+    JOIN vendedores v ON v.id = d.vendedor_id AND v.activo = true
+    WHERE d.fecha BETWEEN current_date
+      AND (date_trunc('month', current_date) + interval '2 months - 1 day')::date
+    ORDER BY d.fecha, d.hora_inicio, v.nombre
+  `)
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    date: row.date,
+    time: displayTime(row.start_time),
+    available: row.available,
+    sellerId: row.seller_id,
+    sellerName: row.seller_name,
+    outlet: row.outlet || undefined,
+  }))
+}
+
+export async function createBookingWithSession(
+  customer: Omit<Cliente, "id">,
+  slotId: string
+): Promise<{ booking: Reserva; session: SesionCompra; accessToken: string }> {
+  return transaction(async (client) => {
+    const slotResult = await client.query<{
+      id: string
+      seller_id: string
+      date: string
+      start_time: string
+      available: boolean
+    }>(`
+      SELECT id::text, vendedor_id::text AS seller_id, fecha::text AS date,
+        to_char(hora_inicio, 'HH24:MI') AS start_time, disponible AS available
+      FROM disponibilidad
+      WHERE id::text = $1 AND fecha >= current_date
+      FOR UPDATE
+    `, [slotId])
+    const slot = slotResult.rows[0]
+    if (slot) await releaseExpiredBookingHolds(client, slotId)
+
+    const activeReservation = slot && await client.query(`
+      SELECT 1 FROM reservas
+      WHERE disponibilidad_id = $1::uuid
+        AND (estado IN ('confirmada', 'completada')
+          OR (estado = 'pendiente_pago' AND hold_expires_at > now()))
+      LIMIT 1
+    `, [slotId])
+    if (!slot || activeReservation?.rowCount) throw new Error("SLOT_NOT_AVAILABLE")
+
+    const customerId = await upsertCustomer(client, customer)
+    await client.query("UPDATE disponibilidad SET disponible = FALSE WHERE id::text = $1", [slotId])
+
+    const bookingResult = await client.query<{
+      id: string
+      fecha_hora: Date
+      estado: Reserva["estado"]
+      monto_reserva: string
+      hold_expires_at: Date
+      created_at: Date
+    }>(`
+      INSERT INTO reservas (
+        cliente_id, disponibilidad_id, fecha_hora, estado, monto_reserva, hold_expires_at
+      )
+      VALUES (
+        $1::uuid, $2::uuid,
+        ($3::date + $4::time) AT TIME ZONE 'America/New_York',
+        'pendiente_pago', 20.00, now() + ($5 * interval '1 minute')
+      )
+      RETURNING id::text, fecha_hora, estado, monto_reserva::text, hold_expires_at, created_at
+    `, [customerId, slotId, slot.date, slot.start_time, bookingHoldMinutes()])
+    const bookingRow = bookingResult.rows[0]
+
+    const sessionResult = await client.query<{ id: string }>(`
+      INSERT INTO sesiones_compra (reserva_id, vendedor_id, cliente_id)
+      VALUES ($1::uuid, $2::uuid, $3::uuid)
+      RETURNING id::text
+    `, [bookingRow.id, slot.seller_id, customerId])
+
+    const customerAccess = generateCustomerToken()
+    await client.query(`
+      INSERT INTO customer_session_access (session_id, token_hash, expires_at)
+      VALUES ($1::uuid, $2, $3)
+    `, [sessionResult.rows[0].id, customerAccess.hash, customerAccess.expiresAt])
+
+    const cliente: Cliente = { id: customerId, ...customer }
+    const booking: Reserva = {
+      id: bookingRow.id,
+      clienteId: customerId,
+      cliente,
+      fecha: new Date(bookingRow.fecha_hora),
+      hora: displayTime(slot.start_time),
+      estado: bookingRow.estado,
+      montoReserva: Number(bookingRow.monto_reserva),
+      holdExpiresAt: new Date(bookingRow.hold_expires_at),
+      createdAt: new Date(bookingRow.created_at),
+    }
+    const session = await getSessionWithClient(clientQuery(client), sessionResult.rows[0].id)
+    if (!session) throw new Error("SESSION_CREATE_FAILED")
+    return { booking, session, accessToken: customerAccess.token }
   })
 }
 
-export function listSessions(): SesionCompra[] {
-  return [...store.sessions.values()]
-    .sort((a, b) => b.fechaInicio.getTime() - a.fechaInicio.getTime())
-    .map(copySession)
+function bookingHoldMinutes(): number {
+  const configured = Number(process.env.STRIPE_BOOKING_HOLD_MINUTES || "15")
+  return Number.isInteger(configured) && configured >= 5 && configured <= 30 ? configured : 15
 }
 
-export function getSession(id: string): SesionCompra | null {
-  const session = store.sessions.get(id)
-  return session ? copySession(session) : null
+export async function releaseExpiredBookingHolds(
+  client?: PoolClient,
+  slotId?: string
+): Promise<number> {
+  const executor = client ? clientQuery(client) : query
+  const expired = await executor<{ disponibilidad_id: string }>(`
+    UPDATE reservas
+    SET estado = 'cancelada', cancellation_reason = 'hold_expired'
+    WHERE estado = 'pendiente_pago'
+      AND hold_expires_at <= now()
+      AND ($1::text IS NULL OR disponibilidad_id::text = $1)
+    RETURNING disponibilidad_id::text
+  `, [slotId || null])
+
+  if (expired.rows.length) {
+    const ids = [...new Set(expired.rows.map((row) => row.disponibilidad_id))]
+    await executor(`
+      UPDATE disponibilidad d
+      SET disponible = true
+      WHERE d.id = ANY($1::uuid[])
+        AND NOT EXISTS (
+          SELECT 1 FROM reservas r
+          WHERE r.disponibilidad_id = d.id
+            AND (r.estado IN ('confirmada', 'completada')
+              OR (r.estado = 'pendiente_pago' AND r.hold_expires_at > now()))
+        )
+    `, [ids])
+  }
+  return expired.rows.length
 }
 
-function recalculateTotals(session: SesionCompra): void {
-  session.subtotal = session.productos.reduce(
-    (sum, product) => sum + product.precio * product.cantidad,
-    0
-  )
-  session.impuesto = session.subtotal * 0.07
-  session.comision = session.subtotal * 0.15
-  session.total = session.subtotal + session.impuesto + session.comision
+export async function attachBookingCheckout(
+  bookingId: string,
+  checkoutSessionId: string,
+  paymentIntentId?: string | null
+): Promise<boolean> {
+  const result = await query(`
+    UPDATE reservas
+    SET checkout_session_id = $2, payment_intent_id = COALESCE($3, payment_intent_id)
+    WHERE id::text = $1 AND estado = 'pendiente_pago' AND hold_expires_at > now()
+  `, [bookingId, checkoutSessionId, paymentIntentId || null])
+  return Boolean(result.rowCount)
 }
 
-export function addProductToSession(
+export async function cancelBookingHold(bookingId: string, reason: string): Promise<void> {
+  await transaction(async (client) => {
+    const result = await client.query<{ disponibilidad_id: string }>(`
+      UPDATE reservas
+      SET estado = 'cancelada', cancellation_reason = $2
+      WHERE id::text = $1 AND estado = 'pendiente_pago'
+      RETURNING disponibilidad_id::text
+    `, [bookingId, reason.slice(0, 100)])
+    if (result.rows[0]) {
+      await client.query(`
+        UPDATE disponibilidad d SET disponible = true
+        WHERE d.id = $1::uuid
+          AND NOT EXISTS (
+            SELECT 1 FROM reservas r
+            WHERE r.disponibilidad_id = d.id
+              AND (r.estado IN ('confirmada', 'completada')
+                OR (r.estado = 'pendiente_pago' AND r.hold_expires_at > now()))
+          )
+      `, [result.rows[0].disponibilidad_id])
+    }
+  })
+}
+
+export async function processBookingCheckoutEvent(input: {
+  eventId: string
+  eventType: string
+  checkoutSessionId: string
+  paymentIntentId?: string | null
+  paid: boolean
+  latePaymentRefunded?: boolean
+}): Promise<"confirmed" | "released" | "late_payment" | "ignored" | "duplicate"> {
+  return transaction(async (client) => {
+    const duplicate = await client.query(
+      "SELECT 1 FROM stripe_webhook_events WHERE event_id = $1",
+      [input.eventId]
+    )
+    if (duplicate.rowCount) return "duplicate"
+
+    const bookingResult = await client.query<{
+      id: string
+      estado: Reserva["estado"]
+      hold_expires_at: Date | null
+      disponibilidad_id: string
+      monto_reserva: string
+      sesion_id: string
+    }>(`
+      SELECT r.id::text, r.estado, r.hold_expires_at,
+        r.disponibilidad_id::text, r.monto_reserva::text, sc.id::text AS sesion_id
+      FROM reservas r
+      JOIN sesiones_compra sc ON sc.reserva_id = r.id
+      WHERE r.checkout_session_id = $1
+      FOR UPDATE OF r
+    `, [input.checkoutSessionId])
+    const booking = bookingResult.rows[0]
+    let outcome: "confirmed" | "released" | "late_payment" | "ignored" = "ignored"
+
+    if (booking && input.eventType === "checkout.session.completed" && input.paid) {
+      const holdValid = booking.estado === "pendiente_pago"
+        && booking.hold_expires_at
+        && booking.hold_expires_at.getTime() > Date.now()
+      if (holdValid) {
+        await client.query(`
+          UPDATE reservas SET estado = 'confirmada', confirmed_at = now(),
+            payment_intent_id = COALESCE($2, payment_intent_id)
+          WHERE id = $1::uuid
+        `, [booking.id, input.paymentIntentId || null])
+        await client.query(`
+          INSERT INTO payment_logs (
+            payment_intent_id, reserva_id, monto, tipo_pago, estado, metadata
+          ) VALUES ($1, $2::uuid, $3, 'booking_fee', 'succeeded', $4::jsonb)
+          ON CONFLICT DO NOTHING
+        `, [input.paymentIntentId || input.checkoutSessionId, booking.id, booking.monto_reserva,
+          JSON.stringify({ checkoutSessionId: input.checkoutSessionId, eventId: input.eventId })])
+        await client.query(`
+          INSERT INTO staff_notifications (
+            seller_id, type, title, message, reserva_id
+          )
+          SELECT sc.vendedor_id, 'booking_payment_confirmed',
+            'Booking payment received',
+            c.nombre || ' paid the $20 booking fee.', r.id
+          FROM reservas r
+          JOIN sesiones_compra sc ON sc.reserva_id = r.id
+          JOIN clientes c ON c.id = r.cliente_id
+          WHERE r.id = $1::uuid
+          ON CONFLICT (type, reserva_id) WHERE reserva_id IS NOT NULL DO NOTHING
+        `, [booking.id])
+        outcome = "confirmed"
+      } else if (booking.estado !== "confirmada" && booking.estado !== "completada") {
+        outcome = "late_payment"
+      }
+    } else if (booking && input.eventType === "checkout.session.expired" && booking.estado === "pendiente_pago") {
+      await client.query(`
+        UPDATE reservas SET estado = 'cancelada', cancellation_reason = 'checkout_expired'
+        WHERE id = $1::uuid
+      `, [booking.id])
+      await client.query("UPDATE disponibilidad SET disponible = true WHERE id = $1::uuid", [booking.disponibilidad_id])
+      outcome = "released"
+    }
+
+    if (outcome !== "late_payment" || input.latePaymentRefunded) {
+      await client.query(`
+        INSERT INTO stripe_webhook_events (event_id, event_type) VALUES ($1, $2)
+      `, [input.eventId, input.eventType])
+    }
+    return outcome
+  })
+}
+
+export async function rotateCustomerAccess(sessionId: string): Promise<string | null> {
+  return transaction(async (client) => {
+    const exists = await client.query(
+      "SELECT 1 FROM sesiones_compra WHERE id::text = $1 FOR UPDATE",
+      [sessionId]
+    )
+    if (!exists.rowCount) return null
+    const access = generateCustomerToken()
+    await client.query(`
+      INSERT INTO customer_session_access (session_id, token_hash, expires_at)
+      VALUES ($1::uuid, $2, $3)
+    `, [sessionId, access.hash, access.expiresAt])
+    return access.token
+  })
+}
+
+async function upsertCustomer(client: PoolClient, customer: Omit<Cliente, "id">): Promise<string> {
+  const existing = await client.query<{ id: string }>(`
+    SELECT id::text FROM clientes
+    WHERE lower(email) = lower($1) OR telefono = $2
+    ORDER BY CASE WHEN lower(email) = lower($1) THEN 0 ELSE 1 END
+    LIMIT 1 FOR UPDATE
+  `, [customer.email, customer.telefono])
+
+  if (existing.rows[0]) {
+    await client.query(`
+      UPDATE clientes SET nombre = $2, email = $3, telefono = $4, ciudad = $5, pais = $6
+      WHERE id = $1::uuid
+    `, [existing.rows[0].id, customer.nombre, customer.email, customer.telefono, customer.ciudad || null, customer.pais])
+    return existing.rows[0].id
+  }
+
+  const inserted = await client.query<{ id: string }>(`
+    INSERT INTO clientes (nombre, email, telefono, ciudad, pais)
+    VALUES ($1, $2, $3, $4, $5) RETURNING id::text
+  `, [customer.nombre, customer.email, customer.telefono, customer.ciudad || null, customer.pais])
+  return inserted.rows[0].id
+}
+
+export async function getBooking(id: string): Promise<Reserva | null> {
+  const result = await query<{
+    id: string
+    cliente_id: string
+    nombre: string
+    email: string
+    telefono: string
+    ciudad: string | null
+    pais: string
+    fecha_hora: Date
+    hora: string
+    estado: Reserva["estado"]
+    monto_reserva: string
+    created_at: Date
+  }>(`
+    SELECT r.id::text, r.cliente_id::text, c.nombre, c.email, c.telefono, c.ciudad, c.pais,
+      r.fecha_hora, to_char(d.hora_inicio, 'HH24:MI') AS hora, r.estado,
+      r.monto_reserva::text, r.created_at
+    FROM reservas r
+    JOIN clientes c ON c.id = r.cliente_id
+    JOIN disponibilidad d ON d.id = r.disponibilidad_id
+    WHERE r.id::text = $1
+  `, [id])
+  const row = result.rows[0]
+  if (!row) return null
+  const cliente: Cliente = {
+    id: row.cliente_id,
+    nombre: row.nombre,
+    email: row.email,
+    telefono: row.telefono,
+    ciudad: row.ciudad || undefined,
+    pais: row.pais,
+  }
+  return {
+    id: row.id,
+    clienteId: row.cliente_id,
+    cliente,
+    fecha: new Date(row.fecha_hora),
+    hora: displayTime(row.hora),
+    estado: row.estado,
+    montoReserva: Number(row.monto_reserva),
+    createdAt: new Date(row.created_at),
+  }
+}
+
+async function loadProducts(
+  execute: QueryExecutor,
+  sessionIds: string[]
+): Promise<Map<string, Producto[]>> {
+  const grouped = new Map<string, Producto[]>()
+  sessionIds.forEach((id) => grouped.set(id, []))
+  if (sessionIds.length === 0) return grouped
+
+  const result = await execute<ProductRow>(`
+    SELECT id::text, sesion_id::text, nombre_producto, sku, precio_unitario::text,
+      cantidad, notas_vendedor, url_imagen, added_at
+    FROM productos_carrito
+    WHERE sesion_id = ANY($1::uuid[])
+    ORDER BY added_at
+  `, [sessionIds])
+  result.rows.forEach((row) => grouped.get(row.sesion_id)?.push(mapProduct(row)))
+  return grouped
+}
+
+async function getSessionWithClient(
+  execute: QueryExecutor,
+  id: string
+): Promise<SesionCompra | null> {
+  const result = await execute<SessionRow>(`${SESSION_SELECT} WHERE sc.id::text = $1`, [id])
+  const row = result.rows[0]
+  if (!row) return null
+  const products = await loadProducts(execute, [row.id])
+  return mapSession(row, products.get(row.id) || [])
+}
+
+export async function listSessions(): Promise<SesionCompra[]> {
+  const result = await query<SessionRow>(`${SESSION_SELECT} ORDER BY sc.fecha_inicio DESC`)
+  const products = await loadProducts(query, result.rows.map((row) => row.id))
+  return result.rows.map((row) => mapSession(row, products.get(row.id) || []))
+}
+
+export async function getSession(id: string): Promise<SesionCompra | null> {
+  return getSessionWithClient(query, id)
+}
+
+export async function startSession(sessionId: string): Promise<SesionCompra | null> {
+  const result = await query(`
+    UPDATE sesiones_compra sc
+    SET started_at = COALESCE(sc.started_at, now()), fecha_inicio = COALESCE(sc.started_at, now())
+    FROM reservas r
+    WHERE sc.id::text = $1
+      AND r.id = sc.reserva_id
+      AND r.estado = 'confirmada'
+      AND sc.estado = 'en_progreso'
+      AND sc.started_at IS NULL
+  `, [sessionId])
+  if (!result.rowCount) return null
+  return getSession(sessionId)
+}
+
+async function recalculateTotals(client: PoolClient, sessionId: string): Promise<void> {
+  await client.query(`
+    UPDATE sesiones_compra sc SET
+      subtotal = totals.subtotal,
+      impuesto = round(totals.subtotal * 0.07, 2),
+      comision = round(totals.subtotal * 0.15, 2),
+      total = totals.subtotal + round(totals.subtotal * 0.07, 2) + round(totals.subtotal * 0.15, 2)
+    FROM (
+      SELECT $1::uuid AS session_id,
+        COALESCE(sum(precio_unitario * cantidad), 0)::numeric(10,2) AS subtotal
+      FROM productos_carrito WHERE sesion_id = $1::uuid
+    ) totals
+    WHERE sc.id = totals.session_id
+  `, [sessionId])
+}
+
+export async function addProductToSession(
   sessionId: string,
   product: Omit<Producto, "id" | "addedAt">
-): SesionCompra | null {
-  const session = store.sessions.get(sessionId)
-  if (!session || session.estado !== "en_progreso") return null
-
-  session.productos.push({
-    id: createId("prod"),
-    ...product,
-    addedAt: new Date(),
+): Promise<SesionCompra | null> {
+  return transaction(async (client) => {
+    const active = await client.query(
+      "SELECT id FROM sesiones_compra WHERE id::text = $1 AND estado = 'en_progreso' AND started_at IS NOT NULL FOR UPDATE",
+      [sessionId]
+    )
+    if (!active.rowCount) return null
+    await client.query(`
+      INSERT INTO productos_carrito
+        (sesion_id, nombre_producto, sku, precio_unitario, cantidad, precio_total, notas_vendedor, url_imagen)
+      VALUES ($1::uuid, $2, $3, $4, $5, round(($4::numeric * $5::integer), 2), $6, $7)
+    `, [sessionId, product.nombre, product.sku || null, product.precio, product.cantidad, product.notas || null, product.urlImagen || null])
+    await recalculateTotals(client, sessionId)
+    return getSessionWithClient(clientQuery(client), sessionId)
   })
-  recalculateTotals(session)
-  return copySession(session)
 }
 
-export function updateProductQuantity(
+export async function updateProductQuantity(
   sessionId: string,
   productId: string,
   delta: number
-): SesionCompra | null {
-  const session = store.sessions.get(sessionId)
-  if (!session || session.estado !== "en_progreso") return null
-
-  const product = session.productos.find((candidate) => candidate.id === productId)
-  if (!product) return null
-
-  product.cantidad = Math.max(1, product.cantidad + delta)
-  recalculateTotals(session)
-  return copySession(session)
+): Promise<SesionCompra | null> {
+  return transaction(async (client) => {
+    const result = await client.query(`
+      UPDATE productos_carrito pc SET
+        cantidad = greatest(1, pc.cantidad + $3::integer),
+        precio_total = round(pc.precio_unitario * greatest(1, pc.cantidad + $3::integer), 2)
+      FROM sesiones_compra sc
+      WHERE pc.id::text = $2 AND pc.sesion_id::text = $1
+        AND sc.id = pc.sesion_id AND sc.estado = 'en_progreso' AND sc.started_at IS NOT NULL
+    `, [sessionId, productId, delta])
+    if (!result.rowCount) return null
+    await recalculateTotals(client, sessionId)
+    return getSessionWithClient(clientQuery(client), sessionId)
+  })
 }
 
-export function removeProductFromSession(
+export async function removeProductFromSession(
   sessionId: string,
   productId: string
-): SesionCompra | null {
-  const session = store.sessions.get(sessionId)
-  if (!session || session.estado !== "en_progreso") return null
-
-  session.productos = session.productos.filter((product) => product.id !== productId)
-  recalculateTotals(session)
-  return copySession(session)
+): Promise<SesionCompra | null> {
+  return transaction(async (client) => {
+    const result = await client.query(`
+      DELETE FROM productos_carrito pc USING sesiones_compra sc
+      WHERE pc.id::text = $2 AND pc.sesion_id::text = $1
+        AND sc.id = pc.sesion_id AND sc.estado = 'en_progreso' AND sc.started_at IS NOT NULL
+    `, [sessionId, productId])
+    if (!result.rowCount) return null
+    await recalculateTotals(client, sessionId)
+    return getSessionWithClient(clientQuery(client), sessionId)
+  })
 }
 
-export function closeSession(sessionId: string): SesionCompra | null {
-  const session = store.sessions.get(sessionId)
-  if (!session) return null
-
-  session.estado = "completada"
-  session.fechaFin = new Date()
-  return copySession(session)
+export async function closeSession(sessionId: string): Promise<SesionCompra | null> {
+  const result = await query(`
+    UPDATE sesiones_compra
+    SET estado = 'completada', fecha_fin = COALESCE(fecha_fin, NOW())
+    WHERE id::text = $1 AND estado = 'en_progreso' AND started_at IS NOT NULL AND total > 0
+  `, [sessionId])
+  if (!result.rowCount) return null
+  return getSession(sessionId)
 }
 
-export function simulatePayment(sessionId: string, amount: "65" | "35"): boolean {
-  const session = store.sessions.get(sessionId)
-  if (!session || session.estado !== "completada" || session.total <= 0) return false
+const DELIVERY_SEQUENCE: EnvioEstado[] = [
+  "preparacion",
+  "en_transito",
+  "en_aduanas",
+  "recibido_equipo_local",
+  "entregado",
+]
 
-  if (amount === "65") {
-    session.montoPagado65 = session.total * 0.65
-  } else if (session.montoPagado65 > 0) {
-    session.montoPagado35 = session.total * 0.35
-  } else {
-    return false
-  }
+export async function updateDeliveryStatus(
+  sessionId: string,
+  nextStatus: EnvioEstado
+): Promise<SesionCompra | null> {
+  if (!DELIVERY_SEQUENCE.includes(nextStatus)) return null
+  return transaction(async (client) => {
+    const sessionResult = await client.query<{ current_status: EnvioEstado | null; address: string | null; city: string | null; customer_name: string }>(`
+      SELECT e.estado AS current_status, sc.direccion_entrega AS address,
+        sc.ciudad_entrega AS city, c.nombre AS customer_name
+      FROM sesiones_compra sc
+      JOIN clientes c ON c.id=sc.cliente_id
+      LEFT JOIN envios e ON e.sesion_id = sc.id
+      WHERE sc.id::text = $1
+        AND sc.estado = 'completada'
+        AND sc.monto_pagado_65 > 0
+      FOR UPDATE OF sc
+    `, [sessionId])
+    if (!sessionResult.rows[0]) return null
 
-  return true
+    const current = sessionResult.rows[0].current_status
+    const expectedIndex = current ? DELIVERY_SEQUENCE.indexOf(current) + 1 : 0
+    if (DELIVERY_SEQUENCE[expectedIndex] !== nextStatus) return null
+
+    if (!current) {
+      const delivery = sessionResult.rows[0]
+      if (!delivery.address || !delivery.city) return null
+      const safeName = delivery.customer_name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 18).toUpperCase() || "CUSTOMER"
+      const labelCode = `BR3D-${safeName}-${sessionId.replaceAll("-", "").slice(0, 8).toUpperCase()}`
+      await client.query(`
+        INSERT INTO envios (sesion_id, estado, costo_envio, etiqueta_codigo, direccion_entrega, ciudad_entrega)
+        VALUES ($1::uuid, 'preparacion', 0, $2, $3, $4)
+      `, [sessionId, labelCode, delivery.address, delivery.city])
+    } else {
+      await client.query(`
+        UPDATE envios SET
+          estado = $2::envio_estado,
+          fecha_envio = CASE WHEN $2 = 'en_transito' THEN COALESCE(fecha_envio, now()) ELSE fecha_envio END,
+          fecha_entrega_real = CASE WHEN $2 = 'entregado' THEN COALESCE(fecha_entrega_real, now()) ELSE fecha_entrega_real END
+        WHERE sesion_id = $1::uuid
+      `, [sessionId, nextStatus])
+    }
+    return getSessionWithClient(clientQuery(client), sessionId)
+  })
 }
 
-export function createEnvio(sessionId: string): Envio {
-  const envio: Envio = {
-    id: createId("env"),
-    sesionId: sessionId,
-    estado: "preparacion",
-    costoEnvio: 0,
-  }
-  store.envios.set(envio.id, envio)
-  return { ...envio }
+export async function attachSessionCheckout(
+  sessionId: string,
+  stage: "65" | "35",
+  checkoutSessionId: string
+): Promise<boolean> {
+  const column = stage === "65" ? "checkout_session_65_id" : "checkout_session_35_id"
+  const eligibility = stage === "65"
+    ? "estado = 'completada' AND total > 0 AND monto_pagado_65 = 0"
+    : "estado = 'completada' AND monto_pagado_65 > 0 AND monto_pagado_35 = 0"
+  const result = await query(`UPDATE sesiones_compra SET ${column} = $2 WHERE id::text = $1 AND ${eligibility}`, [sessionId, checkoutSessionId])
+  return Boolean(result.rowCount)
 }
 
-export function updateEnvioEstado(envioId: string, estado: EnvioEstado): Envio | null {
-  const envio = store.envios.get(envioId)
-  if (!envio) return null
-
-  envio.estado = estado
-  if (estado === "en_transito" && !envio.fechaEnvio) {
-    envio.fechaEnvio = new Date()
-    envio.fechaEntregaEstimada = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
-  }
-  if (estado === "entregado") envio.fechaEntregaReal = new Date()
-  return { ...envio }
+export async function clearSessionCheckout(
+  checkoutSessionId: string,
+  stage: "65" | "35"
+): Promise<void> {
+  const column = stage === "65" ? "checkout_session_65_id" : "checkout_session_35_id"
+  await query(`UPDATE sesiones_compra SET ${column} = NULL WHERE ${column} = $1`, [checkoutSessionId])
 }
 
-export function getEnvio(id: string): Envio | null {
-  const envio = store.envios.get(id)
-  return envio ? { ...envio } : null
-}
-
-export function getEnvioBySession(sessionId: string): Envio | null {
-  const envio = [...store.envios.values()].find((candidate) => candidate.sesionId === sessionId)
-  return envio ? { ...envio } : null
+export async function processSessionCheckoutEvent(input: {
+  eventId: string
+  checkoutSessionId: string
+  paymentIntentId?: string | null
+  stage: "65" | "35"
+  paid: boolean
+}): Promise<"confirmed" | "ignored" | "duplicate"> {
+  return transaction(async (client) => {
+    const duplicate = await client.query("SELECT 1 FROM stripe_webhook_events WHERE event_id = $1", [input.eventId])
+    if (duplicate.rowCount) return "duplicate"
+    const column = input.stage === "65" ? "checkout_session_65_id" : "checkout_session_35_id"
+    const result = await client.query<{ id: string; total: string; seller_id: string; customer_name: string }>(`
+      SELECT sc.id::text, sc.total::text, sc.vendedor_id::text AS seller_id,
+        c.nombre AS customer_name
+      FROM sesiones_compra sc JOIN clientes c ON c.id = sc.cliente_id
+      WHERE sc.${column} = $1 FOR UPDATE OF sc
+    `, [input.checkoutSessionId])
+    const session = result.rows[0]
+    let outcome: "confirmed" | "ignored" = "ignored"
+    if (session && input.paid) {
+      const amount = Number(session.total) * (input.stage === "65" ? 0.65 : 0.35)
+      const updated = await client.query(`
+        UPDATE sesiones_compra SET
+          ${input.stage === "65" ? "monto_pagado_65 = round(total * 0.65, 2), payment_intent_65_id" : "monto_pagado_35 = round(total * 0.35, 2), payment_intent_35_id"} = $2
+        WHERE id = $1::uuid AND ${input.stage === "65" ? "monto_pagado_65" : "monto_pagado_35"} = 0
+      `, [session.id, input.paymentIntentId || input.checkoutSessionId])
+      if (updated.rowCount) {
+        if (input.stage === "35") {
+          await client.query(`UPDATE envios SET estado='entregado', metodo_pago_recibido='stripe', asignacion_pago_final='ingreso_llc_usa', fecha_entrega_real=COALESCE(fecha_entrega_real,now()) WHERE sesion_id=$1::uuid`, [session.id])
+        }
+        await client.query(`INSERT INTO payment_logs(payment_intent_id,sesion_id,monto,tipo_pago,estado,metadata) VALUES($1,$2::uuid,$3,$4,'succeeded',$5::jsonb)`, [input.paymentIntentId || input.checkoutSessionId, session.id, amount.toFixed(2), input.stage === "65" ? "session_65" : "session_35", JSON.stringify({ checkoutSessionId: input.checkoutSessionId, eventId: input.eventId })])
+        await client.query(`INSERT INTO staff_notifications(seller_id,type,title,message) VALUES($1::uuid,$2,$3,$4)`, [session.seller_id, input.stage === "65" ? "initial_payment_confirmed" : "final_payment_confirmed", input.stage === "65" ? "65% payment received" : "Final payment received", `${session.customer_name}'s ${input.stage}% payment was confirmed by Stripe.`])
+        outcome = "confirmed"
+      }
+    }
+    await client.query("INSERT INTO stripe_webhook_events(event_id,event_type) VALUES($1,'checkout.session.completed')", [input.eventId])
+    return outcome
+  })
 }

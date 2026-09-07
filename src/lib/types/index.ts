@@ -2,7 +2,7 @@ export type ReservaEstado = "pendiente_pago" | "confirmada" | "cancelada" | "com
 
 export type SesionEstado = "en_progreso" | "completada" | "cancelada"
 
-export type EnvioEstado = "preparacion" | "en_transito" | "en_aduanas" | "entregado" | "devuelto"
+export type EnvioEstado = "preparacion" | "en_transito" | "en_aduanas" | "recibido_equipo_local" | "entregado" | "devuelto"
 
 export interface Producto {
   id: string
@@ -50,6 +50,8 @@ export interface Reserva {
   estado: ReservaEstado
   montoReserva: number
   paymentIntentId?: string
+  holdExpiresAt?: Date
+  checkoutSessionId?: string
   createdAt: Date
 }
 
@@ -61,8 +63,12 @@ export interface SesionCompra {
   clienteId: string
   cliente: Cliente
   fechaInicio: Date
+  startedAt?: Date
   fechaProgramada?: Date
+  fechaHoraProgramada?: Date
   horaProgramada?: string
+  bookingEstado: ReservaEstado
+  bookingFee: number
   outlet?: string
   fechaFin?: Date
   estado: SesionEstado
@@ -75,11 +81,19 @@ export interface SesionCompra {
   paymentIntent35Id?: string
   montoPagado65: number
   montoPagado35: number
+  deliveryAddress?: string
+  deliveryCity?: string
+  deliveryAddressConfirmedAt?: Date
+  envio?: Envio
 }
 
 export interface Envio {
   id: string
   sesionId: string
+  cajaId?: string
+  labelCode?: string
+  deliveryAddress?: string
+  deliveryCity?: string
   trackingNumber?: string
   transportadora?: string
   fechaEnvio?: Date
@@ -87,6 +101,30 @@ export interface Envio {
   fechaEntregaReal?: Date
   estado: EnvioEstado
   costoEnvio: number
+}
+
+export interface ConsolidatedBoxManifest {
+  id: string
+  number: string
+  country: string
+  courier?: string
+  trackingNumber?: string
+  status: string
+  createdAt: Date
+  receivedAt?: Date
+  customerCount: number
+  productLines: number
+  totalUnits: number
+  packages: Array<{
+    sessionId: string
+    labelCode: string
+    customerName: string
+    phone: string
+    deliveryAddress: string
+    deliveryCity: string
+    remainingBalance: number
+    products: Array<{ name: string; quantity: number; price: number }>
+  }>
 }
 
 export interface TimelineEvent {

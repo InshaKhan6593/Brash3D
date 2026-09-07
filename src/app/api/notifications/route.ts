@@ -1,0 +1,59 @@
+import { NextResponse } from "next/server"
+import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
+import { query } from "@/lib/db"
+
+export const dynamic = "force-dynamic"
+export const runtime = "nodejs"
+
+export async function GET() {
+  const staff = await requireStaff(["admin", "seller"])
+  if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+
+  const result = await query<{
+    id: string
+    title: string
+    message: string
+    reservation_id: string | null
+    read_at: Date | null
+    created_at: Date
+  }>(`
+    SELECT id::text, title, message, reserva_id::text AS reservation_id,
+      read_at, created_at
+    FROM staff_notifications
+    WHERE ($1::uuid IS NULL OR seller_id = $1::uuid)
+    ORDER BY created_at DESC
+    LIMIT 20
+  `, [staff.role === "seller" ? staff.sellerId : null])
+
+  return NextResponse.json({
+    notifications: result.rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      message: row.message,
+      reservationId: row.reservation_id,
+      read: Boolean(row.read_at),
+      createdAt: row.created_at,
+    })),
+  })
+}
+
+export async function PATCH(request: Request) {
+  if (!requestHasSameOrigin(request)) {
+    return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
+  }
+  const staff = await requireStaff(["admin", "seller"])
+  if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const body = await request.json()
+  if (typeof body.id !== "string") {
+    return NextResponse.json({ error: "Missing notification ID" }, { status: 400 })
+  }
+
+  const result = await query(`
+    UPDATE staff_notifications
+    SET read_at = COALESCE(read_at, now())
+    WHERE id::text = $1
+      AND ($2::uuid IS NULL OR seller_id = $2::uuid)
+  `, [body.id, staff.role === "seller" ? staff.sellerId : null])
+  if (!result.rowCount) return NextResponse.json({ error: "Notification not found" }, { status: 404 })
+  return NextResponse.json({ success: true })
+}

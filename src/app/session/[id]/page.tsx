@@ -1,6 +1,6 @@
 "use client"
 
-import { use, useMemo } from "react"
+import { FormEvent, use, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import {
   ArrowRight,
@@ -20,8 +20,12 @@ import { CustomerHeader } from "@/components/customer-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { ColombiaCityCombobox } from "@/components/colombia-city-combobox"
 import { Separator } from "@/components/ui/separator"
 import { useSession } from "@/lib/hooks/useSession"
+import { COLOMBIA_CITIES } from "@/lib/colombia-cities"
 import { cn, formatCurrency } from "@/lib/utils"
 
 interface TimelineItem {
@@ -31,9 +35,17 @@ interface TimelineItem {
   status: "completed" | "current" | "pending"
 }
 
-export default function CustomerSessionPage({ params }: { params: Promise<{ id: string }> }) {
+export default function CustomerSessionPage({ params }: PageProps<"/session/[id]">) {
   const { id } = use(params)
   const { session, loading, error, pay } = useSession(id)
+  const [now, setNow] = useState(() => Date.now())
+  const [paymentError, setPaymentError] = useState("")
+  const [paymentStarting, setPaymentStarting] = useState(false)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const timeline = useMemo<TimelineItem[]>(() => {
     if (!session) return []
@@ -41,13 +53,16 @@ export default function CustomerSessionPage({ params }: { params: Promise<{ id: 
     const closed = session.estado === "completada"
     const paidInitial = session.montoPagado65 > 0
     const paidFinal = session.montoPagado35 > 0
+    const shipment = session.envio
+    const shipped = shipment && shipment.estado !== "preparacion"
+    const delivered = shipment?.estado === "entregado"
 
     return [
       { id: "booked", title: "Booking confirmed", description: "Your Brash3D appointment is reserved", status: "completed" },
       { id: "shopping", title: "Live shopping", description: closed ? "Your seller completed the shopping session" : "Your seller is adding products now", status: closed ? "completed" : "current" },
       { id: "initial", title: "Initial payment", description: paidInitial ? `${formatCurrency(session.montoPagado65)} received` : "65% is due after the session closes", status: paidInitial ? "completed" : closed ? "current" : "pending" },
-      { id: "shipping", title: "Shipping to Colombia", description: "Tracking appears here after dispatch", status: paidInitial ? "current" : "pending" },
-      { id: "delivery", title: "Delivery and final payment", description: paidFinal ? "Order delivered and paid" : "35% is collected on delivery", status: paidFinal ? "completed" : "pending" },
+      { id: "shipping", title: "Shipping to Colombia", description: shipped ? "Your shipment status is being updated by Brash3D" : "Staff prepares shipping after the 65% payment", status: delivered ? "completed" : paidInitial ? "current" : "pending" },
+      { id: "delivery", title: "Delivery and final payment", description: paidFinal ? "Order delivered and paid" : delivered ? "Delivery confirmed; staff is processing the remaining 35%" : "35% is collected when delivery is confirmed", status: paidFinal ? "completed" : delivered ? "current" : "pending" },
     ]
   }, [session])
 
@@ -68,7 +83,7 @@ export default function CustomerSessionPage({ params }: { params: Promise<{ id: 
         <CustomerHeader />
         <main className="flex min-h-[70vh] items-center justify-center px-4">
           <Card className="w-full max-w-md">
-            <CardHeader><CardTitle>Session not found</CardTitle><CardDescription>{error || "This link is invalid or the demo server was restarted."}</CardDescription></CardHeader>
+            <CardHeader><CardTitle>Session not found</CardTitle><CardDescription>{error || "This secure link is invalid, expired, or has been replaced."}</CardDescription></CardHeader>
             <CardContent><Button asChild className="w-full"><Link href="/">Book a new session<ArrowRight /></Link></Button></CardContent>
           </Card>
         </main>
@@ -77,10 +92,95 @@ export default function CustomerSessionPage({ params }: { params: Promise<{ id: 
   }
 
   const isLive = session.estado === "en_progreso"
+  const hasStarted = Boolean(session.startedAt)
   const hasProducts = session.productos.length > 0
   const hasPaid65 = session.montoPagado65 > 0
+  const hasPaid35 = session.montoPagado35 > 0
   const payment65 = session.total * 0.65
   const payment35 = session.total * 0.35
+  const suggestedDeliveryCity = session.deliveryCity || COLOMBIA_CITIES.find((city) =>
+    city.localeCompare(session.cliente.ciudad || "", "es", { sensitivity: "base" }) === 0
+  ) || ""
+
+  async function startInitialPayment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    setPaymentError("")
+    setPaymentStarting(true)
+    const started = await pay("65", {
+      city: String(form.get("city") || ""),
+      address: String(form.get("address") || ""),
+    })
+    if (!started) {
+      setPaymentError("Check the delivery address and try again.")
+      setPaymentStarting(false)
+    }
+  }
+
+  if (session.bookingEstado === "pendiente_pago") {
+    return (
+      <div className="min-h-screen">
+        <CustomerHeader status="booking" />
+        <main className="flex min-h-[75vh] items-center justify-center px-4 py-10">
+          <Card className="w-full max-w-xl text-center">
+            <CardHeader><Clock3 className="mx-auto size-10" /><CardTitle>Payment is being confirmed</CardTitle><CardDescription>Stripe is processing your $20 booking payment. This page updates automatically.</CardDescription></CardHeader>
+            <CardContent><Badge variant="secondary">Processing securely</Badge></CardContent>
+          </Card>
+        </main>
+      </div>
+    )
+  }
+
+  if (session.bookingEstado === "cancelada") {
+    return (
+      <div className="min-h-screen">
+        <CustomerHeader status="booking" />
+        <main className="flex min-h-[75vh] items-center justify-center px-4 py-10">
+          <Card className="w-full max-w-xl text-center">
+            <CardHeader><CardTitle>Reservation expired</CardTitle><CardDescription>This appointment is no longer reserved. Please choose another available time.</CardDescription></CardHeader>
+            <CardContent><Button asChild className="w-full"><Link href="/">Choose another time<ArrowRight /></Link></Button></CardContent>
+          </Card>
+        </main>
+      </div>
+    )
+  }
+
+  if (!hasStarted && session.estado === "en_progreso") {
+    const scheduledAt = new Date(session.fechaHoraProgramada || session.fechaInicio)
+    const difference = scheduledAt.getTime() - now
+    const remaining = Math.abs(difference)
+    const days = Math.floor(remaining / 86_400_000)
+    const hours = Math.floor((remaining % 86_400_000) / 3_600_000)
+    const minutes = Math.floor((remaining % 3_600_000) / 60_000)
+    const seconds = Math.floor((remaining % 60_000) / 1000)
+    const countdown = `${days ? `${days}d ` : ""}${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`
+    const scheduledTimePassed = difference <= 0
+
+    return (
+      <div className="min-h-screen">
+        <CustomerHeader status="booking" />
+        <main className="mx-auto max-w-3xl px-4 py-8 sm:py-12">
+          <div className="space-y-6">
+            <header className="space-y-2 text-center">
+              <Badge><CheckCircle2 />Booking confirmed</Badge>
+              <h1 className="text-3xl font-bold tracking-tight">Your live shopping session is scheduled</h1>
+              <p className="text-muted-foreground">Your personal shopper will start the WhatsApp call at the appointment time.</p>
+            </header>
+            <Card>
+              <CardHeader className="text-center"><CardDescription>{scheduledTimePassed ? "Waiting for your shopper · scheduled time passed by" : "Session starts in"}</CardDescription><CardTitle className="font-mono text-3xl sm:text-4xl">{countdown}</CardTitle></CardHeader>
+              <CardContent className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Appointment</p><p className="mt-1 font-semibold">{scheduledAt.toLocaleString(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })}</p></div>
+                <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Outlet</p><p className="mt-1 font-semibold">{session.outlet || "Nike Sawgrass"}</p><p className="text-sm text-muted-foreground">With {session.vendedor.nombre}</p></div>
+                <div className="rounded-md bg-muted p-4 sm:col-span-2"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">Booking payment</p><p className="text-sm text-muted-foreground">Your appointment is secured.</p></div><Badge variant="secondary"><CheckCircle2 />$20 paid</Badge></div></div>
+                <Button size="lg" className="sm:col-span-2" disabled><MessageCircle />{scheduledTimePassed ? "Waiting for your shopper to start" : "Join session when your shopper starts it"}</Button>
+                <p className="text-center text-xs text-muted-foreground sm:col-span-2">Keep this page open. It will switch to your live cart automatically.</p>
+              </CardContent>
+            </Card>
+          </div>
+        </main>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen">
@@ -125,17 +225,17 @@ export default function CustomerSessionPage({ params }: { params: Promise<{ id: 
                     <p className="mt-1 text-sm text-muted-foreground">Your personal shopper will add products during the call.</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     {session.productos.map((product, index) => (
-                      <article key={product.id} className="flex gap-4 rounded-md bg-muted p-4 sm:p-5">
-                        <div className="flex size-14 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Package className="size-6" /></div>
+                      <article key={product.id} className="flex items-center gap-3 rounded-md bg-muted px-3 py-2.5">
+                        <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-background text-muted-foreground"><Package className="size-5" /></div>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-start justify-between gap-3">
-                            <div><p className="font-semibold">{product.nombre}</p><p className="text-xs text-muted-foreground">Item {index + 1}{product.sku ? ` · SKU ${product.sku}` : ""}</p></div>
-                            <p className="shrink-0 font-bold">{formatCurrency(product.precio * product.cantidad)}</p>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0"><p className="truncate text-sm font-semibold">{product.nombre}</p><p className="text-[11px] text-muted-foreground">Item {index + 1}</p></div>
+                            <p className="shrink-0 text-sm font-bold">{formatCurrency(product.precio * product.cantidad)}</p>
                           </div>
-                          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                            <Badge variant="outline">Qty {product.cantidad}</Badge>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Qty {product.cantidad}</Badge>
                             <span>{formatCurrency(product.precio)} each</span>
                             {product.notas && <><span>·</span><span>{product.notas}</span></>}
                           </div>
@@ -183,11 +283,12 @@ export default function CustomerSessionPage({ params }: { params: Promise<{ id: 
                 <div className="rounded-md bg-muted p-4">
                   <div className="flex items-start justify-between gap-3"><div><p className="font-medium">Initial payment</p><p className="text-xs text-muted-foreground">65% after live shopping</p></div>{hasPaid65 ? <Badge><CheckCircle2 />Paid</Badge> : <Badge variant="secondary">Pending</Badge>}</div>
                   <p className="mt-3 text-2xl font-bold">{formatCurrency(payment65)}</p>
-                  {!isLive && !hasPaid65 && <Button className="mt-3 w-full" onClick={() => void pay("65")} disabled={!hasProducts}>Pay 65% now</Button>}
+                  {!isLive && !hasPaid65 && <form className="mt-4 space-y-3" onSubmit={startInitialPayment}><div className="space-y-1.5"><Label htmlFor="delivery-city">Delivery city in Colombia</Label><ColombiaCityCombobox defaultValue={suggestedDeliveryCity} /><p className="text-[11px] text-muted-foreground">Search the list or type another Colombian municipality.</p></div><div className="space-y-1.5"><Label htmlFor="delivery-address">Complete delivery address</Label><Textarea className="min-h-20 resize-y" id="delivery-address" name="address" defaultValue={session.deliveryAddress || ""} minLength={8} maxLength={500} rows={3} autoComplete="street-address" placeholder="Street, number, apartment, neighborhood, and delivery note" required /><p className="text-[11px] text-muted-foreground">Include apartment, neighborhood, and a landmark when needed.</p></div><p className="text-[11px] text-muted-foreground">The seller can view this confirmed address but cannot change it.</p>{paymentError && <p className="text-sm text-destructive">{paymentError}</p>}<Button className="w-full" disabled={!hasProducts || paymentStarting}>{paymentStarting ? "Opening secure payment..." : "Continue to pay 65%"}</Button></form>}
                 </div>
                 <div className="rounded-md bg-muted p-4">
-                  <div className="flex items-start justify-between gap-3"><div><p className="font-medium">Final payment</p><p className="text-xs text-muted-foreground">35% when delivered</p></div><Badge variant="secondary">On delivery</Badge></div>
+                  <div className="flex items-start justify-between gap-3"><div><p className="font-medium">Final payment</p><p className="text-xs text-muted-foreground">35% when delivered</p></div>{hasPaid35 ? <Badge><CheckCircle2 />Paid</Badge> : <Badge variant="secondary">On delivery</Badge>}</div>
                   <p className="mt-3 text-2xl font-bold">{formatCurrency(payment35)}</p>
+                  {hasPaid65 && !hasPaid35 && <p className="mt-3 text-xs text-muted-foreground">Brash3D staff updates delivery and initiates the remaining payment. No customer completion action is required here.</p>}
                 </div>
               </CardContent>
             </Card>
@@ -195,7 +296,7 @@ export default function CustomerSessionPage({ params }: { params: Promise<{ id: 
             <Card>
               <CardContent className="flex gap-3 py-5">
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10"><MapPin className="size-5" /></span>
-                <div><p className="font-medium">Shipping to Colombia</p><p className="text-sm text-muted-foreground">Tracking details will appear after your initial payment is confirmed.</p></div>
+                <div><p className="font-medium">Shipping to Colombia</p><p className="text-sm text-muted-foreground">{session.envio ? `Current status: ${session.envio.estado.replaceAll("_", " ")}.` : "Tracking details will appear after your initial payment is confirmed and staff creates the shipment."}</p></div>
               </CardContent>
             </Card>
           </aside>

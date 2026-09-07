@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Producto, SesionCompra } from "@/lib/types"
+import { EnvioEstado, Producto, SesionCompra } from "@/lib/types"
 
 interface UseSessionReturn {
   session: SesionCompra | null
@@ -11,11 +11,13 @@ interface UseSessionReturn {
   updateQuantity: (productId: string, delta: number) => Promise<void>
   removeProduct: (productId: string) => Promise<void>
   close: () => Promise<void>
-  pay: (amount: "65" | "35") => Promise<boolean>
+  start: () => Promise<void>
+  updateDeliveryStatus: (status: EnvioEstado) => Promise<void>
+  pay: (amount: "65", delivery: { address: string; city: string }) => Promise<boolean>
   refresh: () => Promise<void>
 }
 
-export function useSession(sessionId: string | null): UseSessionReturn {
+export function useSession(sessionId: string | null, accessToken?: string | null): UseSessionReturn {
   const [session, setSession] = useState<SesionCompra | null>(null)
   const [loading, setLoading] = useState(Boolean(sessionId))
   const [error, setError] = useState<string | null>(null)
@@ -24,9 +26,26 @@ export function useSession(sessionId: string | null): UseSessionReturn {
     if (!sessionId) return
 
     try {
-      const response = await fetch(`/api/sessions?id=${encodeURIComponent(sessionId)}`, {
+      const accessQuery = accessToken ? `&access=${encodeURIComponent(accessToken)}` : ""
+      const response = await fetch(`/api/sessions?id=${encodeURIComponent(sessionId)}${accessQuery}`, {
         cache: "no-store",
       })
+      if (response.status === 404 && !accessToken) {
+        const recovery = await fetch(`/session/${encodeURIComponent(sessionId)}/access`, {
+          cache: "no-store",
+        })
+        if (recovery.ok) {
+          const retried = await fetch(`/api/sessions?id=${encodeURIComponent(sessionId)}`, {
+            cache: "no-store",
+          })
+          if (retried.ok) {
+            const data = (await retried.json()) as { session: SesionCompra }
+            setSession(data.session)
+            setError(null)
+            return
+          }
+        }
+      }
       if (response.status === 404) {
         setSession(null)
         setError(null)
@@ -42,7 +61,7 @@ export function useSession(sessionId: string | null): UseSessionReturn {
     } finally {
       setLoading(false)
     }
-  }, [sessionId])
+  }, [accessToken, sessionId])
 
   useEffect(() => {
     if (!sessionId) return
@@ -61,14 +80,14 @@ export function useSession(sessionId: string | null): UseSessionReturn {
     const response = await fetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, sessionId, ...data }),
+      body: JSON.stringify({ action, sessionId, accessToken, ...data }),
     })
     const result = (await response.json()) as { session?: SesionCompra; error?: string }
     if (!response.ok || !result.session) {
       throw new Error(result.error || "Unable to update the session")
     }
     setSession(result.session)
-  }, [sessionId])
+  }, [accessToken, sessionId])
 
   const addProduct = useCallback(async (product: Omit<Producto, "id" | "addedAt">) => {
     await mutate("addProduct", product)
@@ -86,14 +105,30 @@ export function useSession(sessionId: string | null): UseSessionReturn {
     await mutate("close", {})
   }, [mutate])
 
-  const pay = useCallback(async (amount: "65" | "35"): Promise<boolean> => {
+  const start = useCallback(async () => {
+    await mutate("start", {})
+  }, [mutate])
+
+  const updateDeliveryStatus = useCallback(async (status: EnvioEstado) => {
+    await mutate("updateDeliveryStatus", { status })
+  }, [mutate])
+
+  const pay = useCallback(async (amount: "65", delivery: { address: string; city: string }): Promise<boolean> => {
     try {
-      await mutate("simulatePayment", { amount })
+      if (!sessionId) return false
+      const response = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, stage: amount, ...delivery }),
+      })
+      const result = await response.json() as { checkoutUrl?: string }
+      if (!response.ok || !result.checkoutUrl) return false
+      window.location.assign(result.checkoutUrl)
       return true
     } catch {
       return false
     }
-  }, [mutate])
+  }, [sessionId])
 
-  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, pay, refresh }
+  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, start, updateDeliveryStatus, pay, refresh }
 }
