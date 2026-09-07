@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react"
 import { CalendarDays } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -10,10 +11,13 @@ import { CustomerHeader } from "@/components/customer-header"
 import { TimeSlot } from "@/lib/types"
 
 interface BookingResult {
-  checkoutUrl: string
+  checkoutUrl?: string
+  rewardApplied?: boolean
+  session?: { id: string }
 }
 
 export default function Home() {
+  const router = useRouter()
   const [slots, setSlots] = useState<TimeSlot[]>([])
   const [selectedDate, setSelectedDate] = useState("")
   const [selectedSlotId, setSelectedSlotId] = useState("")
@@ -67,11 +71,17 @@ export default function Home() {
           email: form.get("email"),
           telefono: form.get("telefono"),
           ciudad: form.get("ciudad"),
+          referralCode: form.get("referralCode"),
           slotId: selectedSlotId,
         }),
       })
       const data = (await response.json()) as BookingResult & { error?: string }
       if (!response.ok) throw new Error(data.error || "Unable to complete the booking")
+      if (data.rewardApplied && data.session?.id) {
+        router.push(`/session/${encodeURIComponent(data.session.id)}?booking=reward`)
+        return
+      }
+      if (!data.checkoutUrl) throw new Error("Unable to start secure checkout")
       window.location.assign(data.checkoutUrl)
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Unable to complete the booking")
@@ -174,6 +184,11 @@ export default function Home() {
               <div className="space-y-2">
                 <Label htmlFor="ciudad">City</Label>
                 <Input id="ciudad" name="ciudad" required placeholder="Bogota" className="h-9" />
+              </div>
+              <div className="space-y-2 sm:col-span-2 lg:col-span-1">
+                <Label htmlFor="referralCode">Referral code <span className="text-muted-foreground">(optional)</span></Label>
+                <Input id="referralCode" name="referralCode" maxLength={32} placeholder="BR3D-ABC123" className="h-9 uppercase" />
+                <p className="text-xs text-muted-foreground">A valid reward covers this booking’s $20 fee.</p>
               </div>
               {error && <p className="text-sm text-destructive sm:col-span-2 lg:col-span-1">{error}</p>}
               <Button className="w-full sm:col-span-2 lg:col-span-1" size="lg" disabled={!selectedSlotId || submitting}>

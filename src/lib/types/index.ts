@@ -134,3 +134,23 @@ export interface TimelineEvent {
   date: Date
   status: "completed" | "current" | "pending"
 }
+
+export interface PurchaseHistoryItem {
+  sessionId: string
+  bookedAt: Date
+  outlet?: string
+  status: SesionEstado
+  total: number
+  products: Producto[]
+}
+
+export interface CustomerPurchaseHistory {
+  customer: {
+    id: string
+    name: string
+    referralCode: string
+  }
+  availableReferralRewards: number
+  availableReferralCredit: number
+  purchases: PurchaseHistoryItem[]
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/TestSprite/testsprite-cli/v0.10.0/schemas/plan.schema.json",
+  "projectId": "d07bcba5-3015-40cd-8e53-a63326cdae0e",
+  "type": "frontend",
+  "name": "Customer redeems a referral reward and sees purchase history",
+  "planSteps": [
+    { "type": "action", "description": "Navigate to the local Brash3D home page through the TestSprite local tunnel." },
+    { "type": "assertion", "description": "Verify the booking form includes the optional Referral code field." },
+    { "type": "action", "description": "Choose an available appointment slot, then enter exactly this disposable fixture data in every required field: Full name 'TestSprite Referral Customer', Email 'testsprite-referral-fixture@local.test', WhatsApp '+15550001111', City 'Bogota'. Leave the optional Referral code blank. Confirm City is non-empty before submission." },
+    { "type": "action", "description": "Submit the booking. This existing fixture customer has one eligible referral reward, so do not complete Stripe Checkout and do not enter any payment details." },
+    { "type": "assertion", "description": "Verify the app navigates to the secure customer session page, shows the booking payment as 'Referral reward', and does not redirect to Stripe Checkout." },
+    { "type": "assertion", "description": "Verify the customer page shows Purchase history containing 'TestSprite historical purchase' and displays the invite code 'BR3D-TESTSPRITE-FIXTURE'. Verify it no longer says a free booking is ready, because the one fixture reward was redeemed." }
+  ]
+}

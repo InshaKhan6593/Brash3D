@@ -1,9 +1,14 @@
 import "server-only"
 
+import { randomBytes } from "node:crypto"
 import type { PoolClient, QueryResult, QueryResultRow } from "pg"
 import { generateCustomerToken } from "@/lib/auth"
 import { query, transaction } from "@/lib/db"
-import type { Cliente, EnvioEstado, Producto, Reserva, SesionCompra, TimeSlot, Vendedor } from "@/lib/types"
+import type { Cliente, CustomerPurchaseHistory, EnvioEstado, Producto, Reserva, SesionCompra, TimeSlot, Vendedor } from "@/lib/types"
+
+export interface BookingCustomerInput extends Omit<Cliente, "id"> {
+  referralCode?: string
+}
 
 interface SessionRow extends QueryResultRow {
   id: string
@@ -230,9 +235,9 @@ export async function getTimeSlots(): Promise<TimeSlot[]> {
 }
 
 export async function createBookingWithSession(
-  customer: Omit<Cliente, "id">,
+  customer: BookingCustomerInput,
   slotId: string
-): Promise<{ booking: Reserva; session: SesionCompra; accessToken: string }> {
+): Promise<{ booking: Reserva; session: SesionCompra; accessToken: string; rewardApplied: boolean }> {
   return transaction(async (client) => {
     const slotResult = await client.query<{
       id: string
@@ -288,28 +293,84 @@ export async function createBookingWithSession(
       RETURNING id::text
     `, [bookingRow.id, slot.seller_id, customerId])
 
+    const rewardApplied = await applyPendingReferralReward(
+      client,
+      customerId,
+      bookingRow.id,
+      slot.seller_id,
+      customer.nombre
+    )
+
     const customerAccess = generateCustomerToken()
     await client.query(`
       INSERT INTO customer_session_access (session_id, token_hash, expires_at)
       VALUES ($1::uuid, $2, $3)
     `, [sessionResult.rows[0].id, customerAccess.hash, customerAccess.expiresAt])
 
-    const cliente: Cliente = { id: customerId, ...customer }
+    const cliente: Cliente = {
+      id: customerId,
+      nombre: customer.nombre,
+      email: customer.email,
+      telefono: customer.telefono,
+      ciudad: customer.ciudad,
+      pais: customer.pais,
+    }
     const booking: Reserva = {
       id: bookingRow.id,
       clienteId: customerId,
       cliente,
       fecha: new Date(bookingRow.fecha_hora),
       hora: displayTime(slot.start_time),
-      estado: bookingRow.estado,
-      montoReserva: Number(bookingRow.monto_reserva),
+      estado: rewardApplied ? "confirmada" : bookingRow.estado,
+      montoReserva: rewardApplied ? 0 : Number(bookingRow.monto_reserva),
       holdExpiresAt: new Date(bookingRow.hold_expires_at),
       createdAt: new Date(bookingRow.created_at),
     }
     const session = await getSessionWithClient(clientQuery(client), sessionResult.rows[0].id)
     if (!session) throw new Error("SESSION_CREATE_FAILED")
-    return { booking, session, accessToken: customerAccess.token }
+    return { booking, session, accessToken: customerAccess.token, rewardApplied }
   })
+}
+
+async function applyPendingReferralReward(
+  client: PoolClient,
+  customerId: string,
+  bookingId: string,
+  sellerId: string,
+  customerName: string
+): Promise<boolean> {
+  const rewardResult = await client.query<{ id: string }>(`
+    SELECT id::text
+    FROM referidos_recompensas
+    WHERE referidor_id = $1::uuid
+      AND estado = 'pendiente'
+      AND fecha_expiracion > now()
+    ORDER BY created_at
+    LIMIT 1
+    FOR UPDATE
+  `, [customerId])
+  const reward = rewardResult.rows[0]
+  if (!reward) return false
+
+  const claimed = await client.query(`
+    UPDATE referidos_recompensas
+    SET estado = 'aplicada', reserva_recompensa_usada_id = $2::uuid
+    WHERE id = $1::uuid AND estado = 'pendiente'
+  `, [reward.id, bookingId])
+  if (!claimed.rowCount) return false
+
+  await client.query(`
+    UPDATE reservas
+    SET estado = 'confirmada', confirmed_at = now(), monto_reserva = 0,
+      recompensa_referido_id = $2::uuid
+    WHERE id = $1::uuid
+  `, [bookingId, reward.id])
+  await client.query(`
+    INSERT INTO staff_notifications (seller_id, type, title, message, reserva_id)
+    VALUES ($1::uuid, 'booking_payment_confirmed', 'Referral reward applied', $2, $3::uuid)
+    ON CONFLICT (type, reserva_id) WHERE reserva_id IS NOT NULL DO NOTHING
+  `, [sellerId, `${customerName} used a referral reward for a complimentary booking.`, bookingId])
+  return true
 }
 
 function bookingHoldMinutes(): number {
@@ -485,26 +546,59 @@ export async function rotateCustomerAccess(sessionId: string): Promise<string | 
   })
 }
 
-async function upsertCustomer(client: PoolClient, customer: Omit<Cliente, "id">): Promise<string> {
-  const existing = await client.query<{ id: string }>(`
+function normalizeReferralCode(value: string | undefined): string | null {
+  const code = value?.trim().toUpperCase() || ""
+  if (!code) return null
+  if (!/^[A-Z0-9-]{3,32}$/.test(code)) throw new Error("INVALID_REFERRAL_CODE")
+  return code
+}
+
+async function resolveReferrerId(client: PoolClient, referralCode: string, customerId?: string): Promise<string> {
+  const referrer = await client.query<{ id: string }>(`
     SELECT id::text FROM clientes
+    WHERE upper(codigo_referido) = $1
+    LIMIT 1
+    FOR UPDATE
+  `, [referralCode])
+  if (!referrer.rows[0] || referrer.rows[0].id === customerId) {
+    throw new Error("INVALID_REFERRAL_CODE")
+  }
+  return referrer.rows[0].id
+}
+
+async function upsertCustomer(client: PoolClient, customer: BookingCustomerInput): Promise<string> {
+  const referralCode = normalizeReferralCode(customer.referralCode)
+  const existing = await client.query<{ id: string; referido_por_id: string | null }>(`
+    SELECT id::text, referido_por_id::text FROM clientes
     WHERE lower(email) = lower($1) OR telefono = $2
     ORDER BY CASE WHEN lower(email) = lower($1) THEN 0 ELSE 1 END
     LIMIT 1 FOR UPDATE
   `, [customer.email, customer.telefono])
 
   if (existing.rows[0]) {
+    let referrerId: string | null = null
+    if (referralCode && !existing.rows[0].referido_por_id) {
+      const priorBooking = await client.query(
+        "SELECT 1 FROM reservas WHERE cliente_id = $1::uuid LIMIT 1",
+        [existing.rows[0].id]
+      )
+      if (priorBooking.rowCount) throw new Error("REFERRAL_CODE_ONLY_FIRST_BOOKING")
+      referrerId = await resolveReferrerId(client, referralCode, existing.rows[0].id)
+    }
     await client.query(`
-      UPDATE clientes SET nombre = $2, email = $3, telefono = $4, ciudad = $5, pais = $6
+      UPDATE clientes SET nombre = $2, email = $3, telefono = $4, ciudad = $5, pais = $6,
+        referido_por_id = COALESCE(referido_por_id, $7::uuid)
       WHERE id = $1::uuid
-    `, [existing.rows[0].id, customer.nombre, customer.email, customer.telefono, customer.ciudad || null, customer.pais])
+    `, [existing.rows[0].id, customer.nombre, customer.email, customer.telefono, customer.ciudad || null, customer.pais, referrerId])
     return existing.rows[0].id
   }
 
+  const referrerId = referralCode ? await resolveReferrerId(client, referralCode) : null
+  const customerReferralCode = `BR3D-${randomBytes(5).toString("hex").toUpperCase()}`
   const inserted = await client.query<{ id: string }>(`
-    INSERT INTO clientes (nombre, email, telefono, ciudad, pais)
-    VALUES ($1, $2, $3, $4, $5) RETURNING id::text
-  `, [customer.nombre, customer.email, customer.telefono, customer.ciudad || null, customer.pais])
+    INSERT INTO clientes (nombre, email, telefono, ciudad, pais, referido_por_id, codigo_referido)
+    VALUES ($1, $2, $3, $4, $5, $6::uuid, $7) RETURNING id::text
+  `, [customer.nombre, customer.email, customer.telefono, customer.ciudad || null, customer.pais, referrerId, customerReferralCode])
   return inserted.rows[0].id
 }
 
@@ -583,14 +677,74 @@ async function getSessionWithClient(
   return mapSession(row, products.get(row.id) || [])
 }
 
-export async function listSessions(): Promise<SesionCompra[]> {
-  const result = await query<SessionRow>(`${SESSION_SELECT} ORDER BY sc.fecha_inicio DESC`)
+export async function listSessions(customerId?: string, sellerId?: string): Promise<SesionCompra[]> {
+  const filters: string[] = []
+  const values: string[] = []
+  if (customerId) {
+    values.push(customerId)
+    filters.push(`sc.cliente_id = $${values.length}::uuid`)
+  }
+  if (sellerId) {
+    values.push(sellerId)
+    filters.push(`sc.vendedor_id = $${values.length}::uuid`)
+  }
+  const where = filters.length ? ` WHERE ${filters.join(" AND ")}` : ""
+  const result = await query<SessionRow>(`${SESSION_SELECT}${where} ORDER BY sc.fecha_inicio DESC`, values)
   const products = await loadProducts(query, result.rows.map((row) => row.id))
   return result.rows.map((row) => mapSession(row, products.get(row.id) || []))
 }
 
 export async function getSession(id: string): Promise<SesionCompra | null> {
   return getSessionWithClient(query, id)
+}
+
+export async function getCustomerIdForSession(sessionId: string): Promise<string | null> {
+  const result = await query<{ customer_id: string }>(`
+    SELECT cliente_id::text AS customer_id
+    FROM sesiones_compra
+    WHERE id::text = $1
+  `, [sessionId])
+  return result.rows[0]?.customer_id || null
+}
+
+export async function getCustomerPurchaseHistory(
+  customerId: string,
+  sellerId?: string
+): Promise<CustomerPurchaseHistory | null> {
+  const customer = await query<{ id: string; nombre: string; codigo_referido: string }>(`
+    SELECT id::text, nombre, codigo_referido
+    FROM clientes
+    WHERE id::text = $1
+  `, [customerId])
+  const row = customer.rows[0]
+  if (!row) return null
+
+  const sessions = await listSessions(customerId, sellerId)
+  if (sellerId && sessions.length === 0) return null
+
+  const rewardSummary = await query<{ count: string; credit: string }>(`
+    SELECT count(*)::text AS count, COALESCE(sum(monto_recompensa), 0)::text AS credit
+    FROM referidos_recompensas
+    WHERE referidor_id = $1::uuid
+      AND estado = 'pendiente'
+      AND fecha_expiracion > now()
+  `, [customerId])
+
+  return {
+    customer: { id: row.id, name: row.nombre, referralCode: row.codigo_referido },
+    availableReferralRewards: Number(rewardSummary.rows[0]?.count || 0),
+    availableReferralCredit: Number(rewardSummary.rows[0]?.credit || 0),
+    purchases: sessions
+      .filter((session) => session.estado === "completada")
+      .map((session) => ({
+        sessionId: session.id,
+        bookedAt: session.fechaHoraProgramada || session.fechaInicio,
+        outlet: session.outlet,
+        status: session.estado,
+        total: session.total,
+        products: session.productos,
+      })),
+  }
 }
 
 export async function startSession(sessionId: string): Promise<SesionCompra | null> {
@@ -775,9 +929,18 @@ export async function processSessionCheckoutEvent(input: {
     const duplicate = await client.query("SELECT 1 FROM stripe_webhook_events WHERE event_id = $1", [input.eventId])
     if (duplicate.rowCount) return "duplicate"
     const column = input.stage === "65" ? "checkout_session_65_id" : "checkout_session_35_id"
-    const result = await client.query<{ id: string; total: string; seller_id: string; customer_name: string }>(`
+    const result = await client.query<{
+      id: string
+      total: string
+      seller_id: string
+      customer_id: string
+      reserva_id: string
+      customer_name: string
+      referrer_id: string | null
+    }>(`
       SELECT sc.id::text, sc.total::text, sc.vendedor_id::text AS seller_id,
-        c.nombre AS customer_name
+        sc.cliente_id::text AS customer_id, sc.reserva_id::text AS reserva_id,
+        c.nombre AS customer_name, c.referido_por_id::text AS referrer_id
       FROM sesiones_compra sc JOIN clientes c ON c.id = sc.cliente_id
       WHERE sc.${column} = $1 FOR UPDATE OF sc
     `, [input.checkoutSessionId])
@@ -794,6 +957,9 @@ export async function processSessionCheckoutEvent(input: {
         if (input.stage === "35") {
           await client.query(`UPDATE envios SET estado='entregado', metodo_pago_recibido='stripe', asignacion_pago_final='ingreso_llc_usa', fecha_entrega_real=COALESCE(fecha_entrega_real,now()) WHERE sesion_id=$1::uuid`, [session.id])
         }
+        if (input.stage === "65") {
+          await grantReferralRewardForInitialPayment(client, session)
+        }
         await client.query(`INSERT INTO payment_logs(payment_intent_id,sesion_id,monto,tipo_pago,estado,metadata) VALUES($1,$2::uuid,$3,$4,'succeeded',$5::jsonb)`, [input.paymentIntentId || input.checkoutSessionId, session.id, amount.toFixed(2), input.stage === "65" ? "session_65" : "session_35", JSON.stringify({ checkoutSessionId: input.checkoutSessionId, eventId: input.eventId })])
         await client.query(`INSERT INTO staff_notifications(seller_id,type,title,message) VALUES($1::uuid,$2,$3,$4)`, [session.seller_id, input.stage === "65" ? "initial_payment_confirmed" : "final_payment_confirmed", input.stage === "65" ? "65% payment received" : "Final payment received", `${session.customer_name}'s ${input.stage}% payment was confirmed by Stripe.`])
         outcome = "confirmed"
@@ -802,4 +968,34 @@ export async function processSessionCheckoutEvent(input: {
     await client.query("INSERT INTO stripe_webhook_events(event_id,event_type) VALUES($1,'checkout.session.completed')", [input.eventId])
     return outcome
   })
+}
+
+async function grantReferralRewardForInitialPayment(
+  client: PoolClient,
+  session: {
+    id: string
+    customer_id: string
+    reserva_id: string
+    referrer_id: string | null
+  }
+): Promise<void> {
+  if (!session.referrer_id) return
+
+  const priorPaidSession = await client.query(`
+    SELECT 1
+    FROM sesiones_compra
+    WHERE cliente_id = $1::uuid
+      AND id <> $2::uuid
+      AND monto_pagado_65 > 0
+    LIMIT 1
+  `, [session.customer_id, session.id])
+  if (priorPaidSession.rowCount) return
+
+  await client.query(`
+    INSERT INTO referidos_recompensas (
+      referidor_id, referido_id, reserva_aplicada_id, monto_recompensa, estado, fecha_expiracion
+    )
+    VALUES ($1::uuid, $2::uuid, $3::uuid, 20.00, 'pendiente', now() + interval '1 year')
+    ON CONFLICT (referido_id) DO NOTHING
+  `, [session.referrer_id, session.customer_id, session.reserva_id])
 }

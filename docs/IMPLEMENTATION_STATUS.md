@@ -24,6 +24,8 @@
 - Customer-confirmed Colombia delivery address before the 65 percent payment and system-generated shipment labels.
 - Seller/admin consolidated-box dispatch and Colombia local-team receipt manifest, Stripe/cash/transfer collection, and delivery confirmation.
 - Persistent seller notifications for booking, initial, and final Stripe payments.
+- Referral codes, first-paid-referral rewards, and automatic complimentary booking redemption.
+- Secure customer purchase-history views for customers and assigned sellers, including prior products and totals.
 
 ## Demo Data Assumptions
 
@@ -35,12 +37,10 @@
 
 - WhatsApp Cloud API calls and product/appointment messages require a Meta business account, phone-number ID, access token, and approved templates.
 - Courier/tracking is entered by USA operations for each consolidated box; automatic synchronization requires the client's chosen carrier and credentials.
-- Referral rewards and customer purchase-history views remain to be implemented.
 - Production Stripe keys, a public HTTPS webhook endpoint, production staff accounts, and production operational data must be configured at deployment.
 
 ## Recommended Next Steps
 
 1. Add WhatsApp product and appointment notifications after Meta credentials are supplied.
 2. Connect automatic courier tracking after the client selects a carrier/API.
-3. Add referral rewards and purchase history.
-4. Configure rotated live Stripe credentials and the production webhook during deployment.
+3. Configure rotated live Stripe credentials and the production webhook during deployment.

@@ -28,6 +28,7 @@ export async function POST(request: Request) {
   const phone = typeof body.telefono === "string" ? body.telefono.trim() : ""
   const name = typeof body.nombre === "string" ? body.nombre.trim() : ""
   const city = typeof body.ciudad === "string" ? body.ciudad.trim() : ""
+  const referralCode = typeof body.referralCode === "string" ? body.referralCode.trim() : ""
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
   if (!name || name.length > 255 || !emailValid || email.length > 255 || phone.length < 7 || phone.length > 50 || city.length > 100 || !body.slotId) {
     return NextResponse.json(
@@ -42,10 +43,28 @@ export async function POST(request: Request) {
     telefono: phone,
     ciudad: city,
     pais: body.pais || "Colombia",
+    referralCode,
   }
 
   try {
-    const { booking, session, accessToken } = await createBookingWithSession(customer, body.slotId)
+    const { booking, session, accessToken, rewardApplied } = await createBookingWithSession(customer, body.slotId)
+    const customerCookie = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict" as const,
+      path: "/",
+      maxAge: 90 * 24 * 60 * 60,
+      priority: "high" as const,
+    }
+    if (rewardApplied) {
+      const response = NextResponse.json({
+        booking,
+        session: { id: session.id },
+        rewardApplied: true,
+      }, { status: 201 })
+      response.cookies.set(CUSTOMER_COOKIE, accessToken, customerCookie)
+      return response
+    }
     try {
       const origin = new URL(request.url).origin
       const checkout = await getStripe().checkout.sessions.create({
@@ -80,16 +99,7 @@ export async function POST(request: Request) {
         checkoutUrl: checkout.url,
         holdExpiresAt: booking.holdExpiresAt,
       }, { status: 201 })
-      response.cookies.set(CUSTOMER_COOKIE, accessToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
-        // The session page loads protected data from /api/sessions, so the
-        // HTTP-only access token must be available to that same-origin request.
-        path: "/",
-        maxAge: 90 * 24 * 60 * 60,
-        priority: "high",
-      })
+      response.cookies.set(CUSTOMER_COOKIE, accessToken, customerCookie)
       return response
     } catch (stripeError) {
       await cancelBookingHold(booking.id, "stripe_unavailable")
@@ -104,6 +114,12 @@ export async function POST(request: Request) {
         { error: "That time slot is no longer available" },
         { status: 409 }
       )
+    }
+    if (error instanceof Error && error.message === "INVALID_REFERRAL_CODE") {
+      return NextResponse.json({ error: "That referral code is not valid." }, { status: 400 })
+    }
+    if (error instanceof Error && error.message === "REFERRAL_CODE_ONLY_FIRST_BOOKING") {
+      return NextResponse.json({ error: "Referral codes can only be added to a customer’s first booking." }, { status: 400 })
     }
     throw error
   }

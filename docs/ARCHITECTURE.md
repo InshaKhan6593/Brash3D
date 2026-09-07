@@ -17,6 +17,7 @@
 | `/api/local-team` | Colombia box receipt and delivery operations. |
 | `/api/payments/checkout` | Creates the 65% and final 35% Stripe Checkouts. |
 | `/api/notifications` | Persistent seller payment notifications. |
+| `/api/customer-history` | Secure customer purchase history and referral-reward summary. |
 | `/api/stripe/webhook` | Verifies and processes all Stripe payment events. |
 | `/access/session/<id>` | Exchanges a customer magic-link token for a scoped HTTP-only cookie. |
 
@@ -45,6 +46,8 @@ Slots are generated in one-hour intervals from 9:00 AM through 6:00 PM for the c
 - Seller actions add, remove, and change product quantities through `/api/sessions`.
 - The customer and seller session views poll PostgreSQL-backed APIs for updates every 1.5 seconds.
 - Closing a session calculates subtotal, 7 percent tax, and a 15 percent Brash3D commission.
+- Each customer receives a referral code. A referrer earns one 20 USD booking reward only after the referred customer's first 65 percent payment; the next eligible booking automatically consumes that reward.
+- Customer history exposes completed purchases to the customer through their secure session access and to the assigned seller through staff authorization.
 - The customer starts the Stripe 65 percent payment after invoicing; the Colombia team initiates the final 35 percent Stripe link at delivery or records cash/transfer.
 - The customer confirms a Colombia delivery address before the 65 percent Checkout opens.
 - The seller creates one labelled individual shipment after the 65 percent payment.

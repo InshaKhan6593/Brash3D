@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Circle,
   Clock3,
+  Copy,
   CreditCard,
   MapPin,
   Package,
@@ -26,6 +27,7 @@ import { ColombiaCityCombobox } from "@/components/colombia-city-combobox"
 import { Separator } from "@/components/ui/separator"
 import { useSession } from "@/lib/hooks/useSession"
 import { COLOMBIA_CITIES } from "@/lib/colombia-cities"
+import { CustomerPurchaseHistory } from "@/lib/types"
 import { cn, formatCurrency } from "@/lib/utils"
 
 interface TimelineItem {
@@ -35,17 +37,48 @@ interface TimelineItem {
   status: "completed" | "current" | "pending"
 }
 
+function PurchaseHistoryCard({ history }: { history: CustomerPurchaseHistory | null }) {
+  if (!history) return null
+
+  return <Card>
+    <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ReceiptText className="size-5" />Purchase history</CardTitle><CardDescription>Your completed Brash3D shopping sessions.</CardDescription></CardHeader>
+    <CardContent>
+      {history.purchases.length === 0 ? <p className="text-sm text-muted-foreground">Your completed orders will appear here after your first live-shopping session.</p> : <div className="space-y-3">{history.purchases.map((purchase) => <article key={purchase.sessionId} className="rounded-lg border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-medium">{purchase.outlet || "Brash3D live shopping"}</p><p className="text-xs text-muted-foreground">{new Date(purchase.bookedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p></div><p className="font-semibold">{formatCurrency(purchase.total)}</p></div><p className="mt-2 text-sm text-muted-foreground">{purchase.products.map((product) => `${product.nombre} × ${product.cantidad}`).join(", ") || "No product details recorded"}</p></article>)}</div>}
+    </CardContent>
+  </Card>
+}
+
+function ReferralInviteCard({ history }: { history: CustomerPurchaseHistory | null }) {
+  if (!history) return null
+
+  return <Card>
+    <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><Copy className="size-5" />Invite a friend</CardTitle><CardDescription>Share your code. You earn a free booking after their first paid shopping session.</CardDescription></CardHeader>
+    <CardContent className="space-y-3"><code className="block rounded-md bg-muted px-3 py-2 text-center text-base font-semibold tracking-wide">{history.customer.referralCode}</code>{history.availableReferralRewards > 0 ? <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{history.availableReferralRewards} free booking {history.availableReferralRewards === 1 ? "is" : "are"} ready to use ({formatCurrency(history.availableReferralCredit)} credit).</p> : <p className="text-sm text-muted-foreground">Your next available reward will automatically cover the $20 booking fee.</p>}</CardContent>
+  </Card>
+}
+
 export default function CustomerSessionPage({ params }: PageProps<"/session/[id]">) {
   const { id } = use(params)
   const { session, loading, error, pay } = useSession(id)
   const [now, setNow] = useState(() => Date.now())
   const [paymentError, setPaymentError] = useState("")
   const [paymentStarting, setPaymentStarting] = useState(false)
+  const [history, setHistory] = useState<CustomerPurchaseHistory | null>(null)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    async function loadHistory() {
+      const response = await fetch(`/api/customer-history?sessionId=${encodeURIComponent(id)}`, { cache: "no-store" })
+      if (!response.ok) return
+      const data = await response.json() as { history: CustomerPurchaseHistory }
+      setHistory(data.history)
+    }
+    void loadHistory()
+  }, [id])
 
   const timeline = useMemo<TimelineItem[]>(() => {
     if (!session) return []
@@ -171,11 +204,13 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
               <CardContent className="grid gap-4 sm:grid-cols-2">
                 <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Appointment</p><p className="mt-1 font-semibold">{scheduledAt.toLocaleString(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })}</p></div>
                 <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Outlet</p><p className="mt-1 font-semibold">{session.outlet || "Nike Sawgrass"}</p><p className="text-sm text-muted-foreground">With {session.vendedor.nombre}</p></div>
-                <div className="rounded-md bg-muted p-4 sm:col-span-2"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">Booking payment</p><p className="text-sm text-muted-foreground">Your appointment is secured.</p></div><Badge variant="secondary"><CheckCircle2 />$20 paid</Badge></div></div>
+                <div className="rounded-md bg-muted p-4 sm:col-span-2"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">Booking payment</p><p className="text-sm text-muted-foreground">Your appointment is secured.</p></div><Badge variant="secondary"><CheckCircle2 />{session.bookingFee > 0 ? "$20 paid" : "Referral reward"}</Badge></div></div>
                 <Button size="lg" className="sm:col-span-2" disabled><WhatsAppIcon />{scheduledTimePassed ? "Waiting for your shopper to start" : "Join session when your shopper starts it"}</Button>
                 <p className="text-center text-xs text-muted-foreground sm:col-span-2">Keep this page open. It will switch to your live cart automatically.</p>
               </CardContent>
             </Card>
+            <PurchaseHistoryCard history={history} />
+            <ReferralInviteCard history={history} />
           </div>
         </main>
       </div>
@@ -263,6 +298,8 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
                 </div>
               </CardContent>
             </Card>
+
+            <PurchaseHistoryCard history={history} />
           </div>
 
           <aside className="space-y-6 lg:sticky lg:top-24">
@@ -299,6 +336,8 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
                 <div><p className="font-medium">Shipping to Colombia</p><p className="text-sm text-muted-foreground">{session.envio ? `Current status: ${session.envio.estado.replaceAll("_", " ")}.` : "Tracking details will appear after your initial payment is confirmed and staff creates the shipment."}</p>{session.envio?.labelCode && <p className="mt-2 text-sm"><span className="text-muted-foreground">Shipment code: </span><span className="font-mono font-semibold">{session.envio.labelCode}</span></p>}</div>
               </CardContent>
             </Card>
+
+            <ReferralInviteCard history={history} />
           </aside>
         </div>
       </main>
