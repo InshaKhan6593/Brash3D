@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { ColombiaCityCombobox } from "@/components/colombia-city-combobox"
 import { Separator } from "@/components/ui/separator"
+import { PurchaseHistoryTable } from "@/components/purchase-history-table"
 import { useSession } from "@/lib/hooks/useSession"
 import { COLOMBIA_CITIES } from "@/lib/colombia-cities"
 import { CustomerPurchaseHistory } from "@/lib/types"
@@ -39,13 +40,7 @@ interface TimelineItem {
 
 function PurchaseHistoryCard({ history }: { history: CustomerPurchaseHistory | null }) {
   if (!history) return null
-
-  return <Card>
-    <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ReceiptText className="size-5" />Purchase history</CardTitle><CardDescription>Your completed Brash3D shopping sessions.</CardDescription></CardHeader>
-    <CardContent>
-      {history.purchases.length === 0 ? <p className="text-sm text-muted-foreground">Your completed orders will appear here after your first live-shopping session.</p> : <div className="space-y-3">{history.purchases.map((purchase) => <article key={purchase.sessionId} className="rounded-lg border p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-medium">{purchase.outlet || "Brash3D live shopping"}</p><p className="text-xs text-muted-foreground">{new Date(purchase.bookedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p></div><p className="font-semibold">{formatCurrency(purchase.total)}</p></div><p className="mt-2 text-sm text-muted-foreground">{purchase.products.map((product) => `${product.nombre} × ${product.cantidad}`).join(", ") || "No product details recorded"}</p></article>)}</div>}
-    </CardContent>
-  </Card>
+  return <PurchaseHistoryTable history={history} />
 }
 
 function ReferralInviteCard({ history }: { history: CustomerPurchaseHistory | null }) {

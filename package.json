@@ -12,7 +12,8 @@
     "lint": "eslint",
     "db:migrate": "node scripts/migrate.mjs",
     "auth:create-staff": "node scripts/create-staff.mjs",
-    "test:smoke": "node scripts/smoke-test.mjs"
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "test:testsprite:preflight": "node scripts/testsprite-preflight.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

@@ -140,6 +140,9 @@ export interface PurchaseHistoryItem {
   bookedAt: Date
   outlet?: string
   status: SesionEstado
+  shipmentStatus?: EnvioEstado
+  paymentStatus: "paid" | "partial" | "pending"
+  trackingNumber?: string
   total: number
   products: Producto[]
 }

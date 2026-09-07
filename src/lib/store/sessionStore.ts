@@ -741,6 +741,13 @@ export async function getCustomerPurchaseHistory(
         bookedAt: session.fechaHoraProgramada || session.fechaInicio,
         outlet: session.outlet,
         status: session.estado,
+        shipmentStatus: session.envio?.estado,
+        paymentStatus: session.montoPagado65 + session.montoPagado35 >= session.total - 0.01
+          ? "paid"
+          : session.montoPagado65 > 0
+            ? "partial"
+            : "pending",
+        trackingNumber: session.envio?.trackingNumber,
         total: session.total,
         products: session.productos,
       })),

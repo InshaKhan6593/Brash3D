@@ -1,0 +1,10 @@
+{
+  "planSteps": [
+    { "type": "action", "description": "Navigate to /login." },
+    { "type": "action", "description": "Sign in with the configured local TestSprite admin credentials." },
+    { "type": "assertion", "description": "Verify authentication succeeds and the user reaches the authenticated seller dashboard rather than remaining on the login page." },
+    { "type": "assertion", "description": "Verify Overview, Bookings, Customers, and Sessions sections are available and the page renders without an error state." },
+    { "type": "action", "description": "Open the seller dashboard's customer booking or session workflow." },
+    { "type": "assertion", "description": "Verify the authenticated staff user can see the seller workflow controls." }
+  ]
+}

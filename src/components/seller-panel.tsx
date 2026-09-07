@@ -4,6 +4,7 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
+  ArrowLeft,
   CalendarDays,
   Bell,
   CheckCircle2,
@@ -32,6 +33,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ModeToggle } from "@/components/mode-toggle"
+import { PurchaseHistoryTable } from "@/components/purchase-history-table"
 import { WhatsAppIcon } from "@/components/whatsapp-icon"
 import {
   Pagination as PaginationRoot,
@@ -340,6 +342,32 @@ function ShippingOperations({
   </div>
 }
 
+function CustomerPurchaseHistoryDetail({ history, loading, error, onBack }: { history: CustomerPurchaseHistory | null; loading: boolean; error: string; onBack: () => void }) {
+  return <div className="space-y-6">
+    <div className="space-y-3">
+      <Button type="button" variant="ghost" size="sm" className="-ml-3" onClick={onBack}><ArrowLeft />Back to customers</Button>
+      <div>
+        <p className="text-sm text-muted-foreground">Customer record</p>
+        <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">{history?.customer.name || "Purchase history"}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Review completed orders, payment progress, and shipment details.</p>
+      </div>
+    </div>
+
+    {loading && <Card><CardContent className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">Loading customer history...</CardContent></Card>}
+    {error && <Alert variant="destructive"><AlertCircle /><AlertTitle>Unable to load history</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
+    {history && <>
+      <Card>
+        <CardContent className="grid gap-4 p-4 sm:grid-cols-3 sm:p-5">
+          <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Customer</p><p className="mt-1 font-medium">{history.customer.name}</p></div>
+          <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Referral code</p><p className="mt-1 font-mono text-sm font-semibold">{history.customer.referralCode}</p></div>
+          <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Available credit</p><p className="mt-1 font-semibold">{formatCurrency(history.availableReferralCredit)} <span className="text-sm font-normal text-muted-foreground">({history.availableReferralRewards} reward{history.availableReferralRewards === 1 ? "" : "s"})</span></p></div>
+        </CardContent>
+      </Card>
+      <PurchaseHistoryTable history={history} />
+    </>}
+  </div>
+}
+
 function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }: { session: SesionCompra; open: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => Promise<void>; isActive: boolean }) {
   const subtotal = session.productos.reduce((sum, product) => sum + product.precio * product.cantidad, 0)
   const tax = subtotal * 0.07
@@ -421,13 +449,13 @@ export function SellerPanel({ sessionId }: SellerPanelProps) {
   const [actionError, setActionError] = useState("")
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
   const [shipmentCodeCopied, setShipmentCodeCopied] = useState(false)
-  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyCustomerId, setHistoryCustomerId] = useState<string | null>(null)
   const [customerHistory, setCustomerHistory] = useState<CustomerPurchaseHistory | null>(null)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState("")
 
   async function openCustomerHistory(customerId: string) {
-    setHistoryOpen(true)
+    setHistoryCustomerId(customerId)
     setHistoryLoading(true)
     setHistoryError("")
     setCustomerHistory(null)
@@ -441,6 +469,12 @@ export function SellerPanel({ sessionId }: SellerPanelProps) {
     } finally {
       setHistoryLoading(false)
     }
+  }
+
+  function closeCustomerHistory() {
+    setHistoryCustomerId(null)
+    setCustomerHistory(null)
+    setHistoryError("")
   }
 
   useEffect(() => {
@@ -841,14 +875,6 @@ export function SellerPanel({ sessionId }: SellerPanelProps) {
             <ModeToggle />{bookingDialog}
           </div>
         </header>
-        <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
-          <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl">
-            <DialogHeader><DialogTitle>{customerHistory ? `${customerHistory.customer.name}'s purchase history` : "Purchase history"}</DialogTitle><DialogDescription>Completed sessions and product preferences for the selected customer.</DialogDescription></DialogHeader>
-            {historyLoading && <p className="py-8 text-center text-sm text-muted-foreground">Loading customer history...</p>}
-            {historyError && <p className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{historyError}</p>}
-            {customerHistory && <div className="space-y-4"><div className="rounded-md bg-muted p-3 text-sm"><p className="text-muted-foreground">Referral code</p><p className="mt-1 font-mono font-semibold">{customerHistory.customer.referralCode}</p></div>{customerHistory.purchases.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">No completed purchases yet.</p> : customerHistory.purchases.map((purchase) => <article key={purchase.sessionId} className="rounded-lg border p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-medium">{purchase.outlet || "Brash3D live shopping"}</p><p className="text-xs text-muted-foreground">{new Date(purchase.bookedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p></div><p className="font-semibold">{formatCurrency(purchase.total)}</p></div><p className="mt-3 text-sm text-muted-foreground">{purchase.products.map((product) => `${product.nombre} × ${product.cantidad}`).join(", ") || "No product details recorded"}</p></article>)}</div>}
-          </DialogContent>
-        </Dialog>
         {activeNotificationId && (() => {
           const notification = notifications.find((item) => item.id === activeNotificationId)
           if (!notification) return null
@@ -866,11 +892,13 @@ export function SellerPanel({ sessionId }: SellerPanelProps) {
           </div>
         })()}
         <div className="space-y-6 p-4 lg:p-8">
+          {historyCustomerId ? <CustomerPurchaseHistoryDetail history={customerHistory} loading={historyLoading} error={historyError} onBack={closeCustomerHistory} /> : <>
           {activeTab === "overview" && <OverviewDashboard sessions={sessions} boxes={boxes} />}
           {activeTab === "shipping" && <ShippingOperations boxes={boxes} readyShipments={readyShipments} selectedShipments={selectedShipments} courier={boxCourier} tracking={boxTracking} message={shippingMessage} onCourierChange={setBoxCourier} onTrackingChange={setBoxTracking} onToggleShipment={(id) => setSelectedShipments((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])} onCreateBox={createConsolidatedBox} onAssignShipments={assignShipmentsToBox} onDispatchBox={dispatchConsolidatedBox} />}
           {activeTab === "bookings" && <TableCard title="Bookings" description="Scheduled appointments and booking-payment readiness."><div className="space-y-3 border-b px-4 pb-4"><div className="flex flex-wrap gap-2">{(["upcoming", "today", "payment_pending", "in_progress", "completed", "all"] as BookingFilter[]).map((filter) => <Button key={filter} size="sm" variant={bookingFilter === filter ? "default" : "outline"} onClick={() => { setBookingFilter(filter); setPage(1) }}>{filter.replaceAll("_", " ")}</Button>)}</div><div className="grid gap-2 sm:grid-cols-[1fr_190px_auto]"><Input aria-label="Search bookings" placeholder="Search name, phone, or email" value={bookingSearch} onChange={(event) => { setBookingSearch(event.target.value); setPage(1) }} /><Input aria-label="Filter bookings by date" type="date" value={bookingFilterDate} onChange={(event) => { setBookingFilterDate(event.target.value); setPage(1) }} /><Button variant="ghost" disabled={!bookingSearch && !bookingFilterDate} onClick={() => { setBookingSearch(""); setBookingFilterDate(""); setPage(1) }}>Clear</Button></div><p className="text-xs text-muted-foreground">{filteredBookings.length} matching booking{filteredBookings.length === 1 ? "" : "s"} · nearest upcoming first</p></div><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>Date</TableHead><TableHead>Time</TableHead><TableHead>Booking payment</TableHead><TableHead>Appointment</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell><div className="flex items-center gap-2"><p className="font-medium">{item.cliente.nombre}</p>{item.id === nextBookingId && <Badge variant="outline">Next</Badge>}</div><p className="text-xs text-muted-foreground">{item.cliente.telefono}</p></TableCell><TableCell>{item.fechaProgramada ? formatDate(item.fechaProgramada) : "—"}</TableCell><TableCell>{item.horaProgramada || "—"}</TableCell><TableCell>{item.bookingEstado === "confirmada" || item.bookingEstado === "completada" ? <Badge><CheckCircle2 />{item.bookingFee > 0 ? "$20 paid" : "Referral reward"}</Badge> : <Badge variant="outline">Pending</Badge>}</TableCell><TableCell><BookingStage session={item} /></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredBookings.length} onChange={setPage} /></TableCard>}
           {activeTab === "customers" && <TableCard title="Customers" description="Customers with a booking or shopping session."><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>WhatsApp</TableHead><TableHead>City</TableHead><TableHead>Last activity</TableHead><TableHead className="text-right">Order value</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.clienteId}><TableCell><p className="font-medium">{item.cliente.nombre}</p><p className="text-xs text-muted-foreground">{item.cliente.email}</p></TableCell><TableCell>{item.cliente.telefono}</TableCell><TableCell>{item.cliente.ciudad || item.cliente.pais}</TableCell><TableCell>{formatDateTime(item.fechaInicio)}</TableCell><TableCell className="text-right font-medium">{formatCurrency(item.total)}</TableCell><TableCell className="text-right"><RowActions session={item} onViewHistory={openCustomerHistory} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={customers.length} onChange={setPage} /></TableCard>}
           {activeTab === "sessions" && <TableCard title="Shopping sessions" description="Customer sessions and shipment progress."><div className="border-b px-4 py-4"><Input aria-label="Search sessions" placeholder="Search customer, session ID, or shipment code" value={sessionSearch} onChange={(event) => { setSessionSearch(event.target.value); setPage(1) }} /></div><p className="border-b px-4 py-3 text-xs text-muted-foreground">{filteredSessions.length} matching session{filteredSessions.length === 1 ? "" : "s"}</p><Table className="!w-full !table-fixed [&_th]:!py-2 [&_td]:!py-2"><TableHeader><TableRow><TableHead className="w-[13%]">Session ID</TableHead><TableHead className="w-[14%]">Date</TableHead><TableHead className="w-[21%]">Customer</TableHead><TableHead className="w-[20%]">Order stage</TableHead><TableHead className="w-[24%]">Shipment code</TableHead><TableHead className="w-[8%] text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell title={item.id} className="font-mono text-xs">{item.id.slice(-8).toUpperCase()}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDateTime(item.fechaHoraProgramada || item.fechaInicio)}</TableCell><TableCell>{item.cliente.nombre}</TableCell><TableCell className="whitespace-nowrap"><OrderStage session={item} /></TableCell><TableCell title={item.envio?.labelCode || "—"} className="max-w-48 font-mono text-xs"><span className="block truncate">{item.envio?.labelCode || "—"}</span></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredSessions.length} onChange={setPage} /></TableCard>}
+          </>}
         </div>
       </SidebarInset>
     </SidebarProvider>

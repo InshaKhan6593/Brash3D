@@ -168,7 +168,14 @@ export function requestHasSameOrigin(request: Request): boolean {
   try {
     const originUrl = new URL(origin)
     const requestUrl = new URL(request.url)
-    return originUrl.host === requestUrl.host && originUrl.protocol === requestUrl.protocol
+    // A trusted local/prod reverse proxy can terminate TLS and forward the
+    // request to Next on 127.0.0.1. Compare against the browser-visible host
+    // in that case, while retaining strict host and protocol matching.
+    const forwardedHost = request.headers.get("x-forwarded-host")?.split(",", 1)[0]?.trim()
+    const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",", 1)[0]?.trim()
+    const expectedHost = forwardedHost || requestUrl.host
+    const expectedProtocol = forwardedProto ? `${forwardedProto}:` : requestUrl.protocol
+    return originUrl.host === expectedHost && originUrl.protocol === expectedProtocol
   } catch {
     return false
   }

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/TestSprite/testsprite-cli/v0.10.0/schemas/plan.schema.json",
+  "projectId": "d07bcba5-3015-40cd-8e53-a63326cdae0e",
+  "type": "frontend",
+  "name": "Public booking shows available Nike Sawgrass slots",
+  "planSteps": [
+    { "type": "action", "description": "Navigate to the local home page at /." },
+    { "type": "action", "description": "Wait up to 10 seconds for the page's available-times request to finish before inspecting the date and time controls." },
+    { "type": "assertion", "description": "Verify the page identifies the Nike Sawgrass outlet and shows a date selector with hourly appointment slots." },
+    { "type": "action", "description": "Choose a valid date in the available booking range and select an available slot." },
+    { "type": "assertion", "description": "Verify the selected slot is visibly selected and any unavailable or booked slots remain visible but disabled." },
+    { "type": "action", "description": "Complete every required customer field with clearly fake local test data: Full name, Email, WhatsApp, and City. Confirm City has a non-empty value before submitting. Verify the optional Referral code field is visible but leave it blank for this payment-handoff case. Stop before any real or live payment is submitted." },
+    { "type": "assertion", "description": "Verify the booking flow accepts the form and presents the Test Mode booking-payment step or an equivalent pending-payment state." }
+  ]
+}
