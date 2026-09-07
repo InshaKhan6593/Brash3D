@@ -172,6 +172,13 @@ try {
   assert.equal(createBox.response.status, 200)
   boxId = createBox.body.box.id
 
+  const dispatchBox = await jsonRequest("/api/shipping", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: baseUrl, cookie: staffCookie },
+    body: JSON.stringify({ action: "dispatchBox", boxId }),
+  })
+  assert.equal(dispatchBox.response.status, 200)
+
   const sellerManifest = await jsonRequest("/api/shipping", { headers: { cookie: staffCookie } })
   const manifestBox = sellerManifest.body.boxes.find((box) => box.id === boxId)
   assert.equal(manifestBox.customerCount, 1)
