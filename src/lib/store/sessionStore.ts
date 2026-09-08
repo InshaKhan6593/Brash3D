@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto"
 import type { PoolClient, QueryResult, QueryResultRow } from "pg"
 import { generateCustomerToken } from "@/lib/auth"
 import { query, transaction } from "@/lib/db"
-import type { Cliente, CustomerPurchaseHistory, EnvioEstado, Producto, Reserva, SesionCompra, TimeSlot, Vendedor } from "@/lib/types"
+import type { Cliente, CustomerPurchaseHistory, EnvioEstado, PagoFinalMetodo, Producto, Reserva, SesionCompra, TimeSlot, Vendedor } from "@/lib/types"
 
 export interface BookingCustomerInput extends Omit<Cliente, "id"> {
   referralCode?: string
@@ -38,6 +38,8 @@ interface SessionRow extends QueryResultRow {
   total: string
   payment_intent_65_id: string | null
   payment_intent_35_id: string | null
+  checkout_session_65_id: string | null
+  checkout_session_35_id: string | null
   monto_pagado_65: string
   monto_pagado_35: string
   direccion_entrega_sesion: string | null
@@ -51,6 +53,7 @@ interface SessionRow extends QueryResultRow {
   ciudad_entrega: string | null
   tracking_number: string | null
   transportadora: string | null
+  metodo_pago_recibido: PagoFinalMetodo | null
   fecha_envio: Date | null
   fecha_entrega_estimada: Date | null
   fecha_entrega_real: Date | null
@@ -90,12 +93,13 @@ const SESSION_SELECT = `
     to_char(d.hora_inicio, 'HH24:MI') AS hora_programada, sc.estado,
     sc.subtotal::text, sc.impuesto::text, sc.comision::text, sc.total::text,
     sc.payment_intent_65_id, sc.payment_intent_35_id,
+    sc.checkout_session_65_id, sc.checkout_session_35_id,
     sc.monto_pagado_65::text, sc.monto_pagado_35::text,
     sc.direccion_entrega AS direccion_entrega_sesion,
     sc.ciudad_entrega AS ciudad_entrega_sesion, sc.direccion_confirmada_at,
     e.id::text AS envio_id, e.caja_id::text, e.estado AS envio_estado, e.etiqueta_codigo,
     e.direccion_entrega, e.ciudad_entrega, e.tracking_number,
-    e.transportadora, e.fecha_envio, e.fecha_entrega_estimada,
+    e.transportadora, e.metodo_pago_recibido, e.fecha_envio, e.fecha_entrega_estimada,
     e.fecha_entrega_real, e.costo_envio::text
   FROM sesiones_compra sc
   JOIN reservas r ON r.id = sc.reserva_id
@@ -162,6 +166,8 @@ function mapSession(row: SessionRow, products: Producto[]): SesionCompra {
     total: Number(row.total),
     paymentIntent65Id: row.payment_intent_65_id || undefined,
     paymentIntent35Id: row.payment_intent_35_id || undefined,
+    checkoutSession65Id: row.checkout_session_65_id || undefined,
+    checkoutSession35Id: row.checkout_session_35_id || undefined,
     montoPagado65: Number(row.monto_pagado_65),
     montoPagado35: Number(row.monto_pagado_35),
     deliveryAddress: row.direccion_entrega_sesion || undefined,
@@ -176,6 +182,7 @@ function mapSession(row: SessionRow, products: Producto[]): SesionCompra {
       deliveryCity: row.ciudad_entrega || undefined,
       trackingNumber: row.tracking_number || undefined,
       transportadora: row.transportadora || undefined,
+      metodoPagoRecibido: row.metodo_pago_recibido || undefined,
       fechaEnvio: row.fecha_envio ? new Date(row.fecha_envio) : undefined,
       fechaEntregaEstimada: row.fecha_entrega_estimada ? new Date(row.fecha_entrega_estimada) : undefined,
       fechaEntregaReal: row.fecha_entrega_real ? new Date(row.fecha_entrega_real) : undefined,
@@ -849,6 +856,38 @@ export async function closeSession(sessionId: string): Promise<SesionCompra | nu
   `, [sessionId])
   if (!result.rowCount) return null
   return getSession(sessionId)
+}
+
+export async function reopenSessionForCorrection(sessionId: string, staffUserId: string): Promise<SesionCompra | null> {
+  return transaction(async (client) => {
+    const current = await client.query<{
+      estado: SesionCompra["estado"]
+      monto_pagado_65: string
+      payment_intent_65_id: string | null
+      envio_id: string | null
+      checkout_session_65_id: string | null
+    }>(`
+      SELECT sc.estado, sc.monto_pagado_65::text, sc.payment_intent_65_id,
+        e.id::text AS envio_id, sc.checkout_session_65_id
+      FROM sesiones_compra sc
+      LEFT JOIN envios e ON e.sesion_id = sc.id
+      WHERE sc.id::text = $1
+      FOR UPDATE OF sc
+    `, [sessionId])
+    const session = current.rows[0]
+    if (!session || session.estado !== "completada" || Number(session.monto_pagado_65) > 0 || session.payment_intent_65_id || session.envio_id || session.checkout_session_65_id) return null
+
+    await client.query(`
+      UPDATE sesiones_compra
+      SET estado = 'en_progreso', fecha_fin = NULL
+      WHERE id::text = $1
+    `, [sessionId])
+    await client.query(`
+      INSERT INTO session_audit_events (session_id, staff_user_id, event_type, metadata)
+      VALUES ($1::uuid, $2::uuid, 'reopened_for_correction', $3::jsonb)
+    `, [sessionId, staffUserId, JSON.stringify({ reason: "admin_correction" })])
+    return getSessionWithClient(clientQuery(client), sessionId)
+  })
 }
 
 const DELIVERY_SEQUENCE: EnvioEstado[] = [

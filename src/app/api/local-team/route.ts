@@ -14,9 +14,14 @@ export async function GET() {
     listSessions(),
     listBoxManifests(),
   ])
+  const visibleBoxes = boxes.filter((box) => box.status === "enviada" || box.status === "recibida")
   return NextResponse.json({
-    deliveries: sessions.filter((session) => session.estado === "completada" && session.montoPagado65 > 0),
-    boxes,
+    deliveries: sessions.filter((session) => session.estado === "completada"
+      && session.montoPagado65 > 0
+      && (session.envio?.estado === "recibido_equipo_local" || session.envio?.estado === "entregado")),
+    boxes: visibleBoxes,
+    incomingBoxes: visibleBoxes.filter((box) => box.status === "enviada"),
+    receivedBoxes: visibleBoxes.filter((box) => box.status === "recibida"),
   })
 }
 

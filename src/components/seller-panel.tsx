@@ -13,10 +13,12 @@ import {
   DollarSign,
   AlertCircle,
   LayoutDashboard,
+  Lock,
   LogOut,
   MoreHorizontal,
   Minus,
   Package,
+  Pencil,
   Plus,
   ReceiptText,
   ShoppingCart,
@@ -66,6 +68,7 @@ type BookingFilter = "all" | "today" | "upcoming" | "payment_pending" | "in_prog
 
 interface SellerPanelProps {
   sessionId: string | null
+  isAdmin: boolean
 }
 
 interface StaffNotification {
@@ -86,6 +89,15 @@ const pageSize = 4
 const deliverySteps: { status: EnvioEstado; label: string }[] = [
   { status: "preparacion", label: "Create individual shipment" },
 ]
+
+function shipmentStatusLabel(status: EnvioEstado): string {
+  if (status === "preparacion") return "Preparing"
+  if (status === "en_transito") return "In transit"
+  if (status === "en_aduanas") return "In customs"
+  if (status === "recibido_equipo_local") return "Received by local team"
+  if (status === "entregado") return "Delivered"
+  return "Returned"
+}
 
 function SessionStatus({ session }: { session: SesionCompra }) {
   if (session.estado === "completada") return (
@@ -368,13 +380,58 @@ function CustomerPurchaseHistoryDetail({ history, loading, error, onBack }: { hi
   </div>
 }
 
+function ReopenSessionDialog({ onConfirm }: { onConfirm: () => Promise<void> }) {
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+
+  async function confirm() {
+    setSaving(true)
+    setError("")
+    try {
+      await onConfirm()
+      setOpen(false)
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Unable to reopen session")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <Dialog open={open} onOpenChange={(nextOpen) => { setOpen(nextOpen); if (!nextOpen) setError("") }}>
+    <DialogTrigger asChild><Button type="button" variant="outline"><Pencil />Reopen for correction</Button></DialogTrigger>
+    <DialogContent className="sm:max-w-lg">
+      <DialogHeader><DialogTitle>Reopen this order for correction?</DialogTitle><DialogDescription>This returns the session to edit mode so the cart can be corrected before the customer pays the 65% invoice.</DialogDescription></DialogHeader>
+      <Alert><Lock /><AlertTitle>Admin-only action</AlertTitle><AlertDescription>Reopening is recorded in the audit log. It is unavailable after payment, shipment creation, or an active payment checkout.</AlertDescription></Alert>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={saving}>Cancel</Button><Button type="button" onClick={() => void confirm()} disabled={saving}>{saving ? "Reopening…" : "Reopen session"}</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>
+}
+
+function ReadOnlyOrderDetails({ session, isAdmin, onReopen }: { session: SesionCompra; isAdmin: boolean; onReopen: () => Promise<void> }) {
+  const canReopen = isAdmin && session.estado === "completada" && session.montoPagado65 <= 0 && !session.paymentIntent65Id && !session.checkoutSession65Id && !session.envio
+  return <Card>
+    <CardHeader className="flex-row items-start justify-between space-y-0 gap-4">
+      <div><CardTitle className="flex items-center gap-2 text-xl"><Lock className="size-5" />Order details</CardTitle><CardDescription>This shopping session is closed and the invoice total is locked.</CardDescription></div>
+      <Badge variant="secondary" className="shrink-0">Read only</Badge>
+    </CardHeader>
+    <CardContent className="p-0">
+      {session.productos.length === 0 ? <p className="px-6 pb-6 text-sm text-muted-foreground">No products were recorded for this session.</p> : <Table className="w-full table-fixed"><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="hidden sm:table-cell">SKU</TableHead><TableHead className="w-16 text-right">Qty</TableHead><TableHead className="w-28 text-right">Unit price</TableHead><TableHead className="w-28 text-right">Line total</TableHead></TableRow></TableHeader><TableBody>{session.productos.map((product) => <TableRow key={product.id}><TableCell className="min-w-0"><p className="truncate font-medium" title={product.nombre}>{product.nombre}</p>{product.notas && <p className="truncate text-xs text-muted-foreground" title={product.notas}>{product.notas}</p>}</TableCell><TableCell className="hidden font-mono text-xs text-muted-foreground sm:table-cell">{product.sku || "—"}</TableCell><TableCell className="text-right">{product.cantidad}</TableCell><TableCell className="whitespace-nowrap text-right text-sm">{formatCurrency(product.precio)}</TableCell><TableCell className="whitespace-nowrap text-right font-medium">{formatCurrency(product.precio * product.cantidad)}</TableCell></TableRow>)}</TableBody></Table>}
+      <div className="flex flex-col gap-3 border-t px-6 py-4 sm:flex-row sm:items-center sm:justify-between"><p className="text-xs text-muted-foreground">Closed {session.fechaFin ? formatDateTime(session.fechaFin) : "after the live session"}. Payment and shipping continue separately.</p>{canReopen && <ReopenSessionDialog onConfirm={onReopen} />}</div>
+    </CardContent>
+  </Card>
+}
+
 function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }: { session: SesionCompra; open: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => Promise<void>; isActive: boolean }) {
+  if (!isActive) return null
+
   const subtotal = session.productos.reduce((sum, product) => sum + product.precio * product.cantidad, 0)
   const tax = subtotal * 0.07
   const fee = subtotal * 0.15
   const total = subtotal + tax + fee
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogTrigger asChild><Button className="w-full" variant="destructive" disabled={!isActive || session.productos.length === 0}><X />{isActive ? "Close session and invoice" : "Session closed"}</Button></DialogTrigger>
+    <DialogTrigger asChild><Button className="w-full" variant="destructive" disabled={session.productos.length === 0}><X />Close session and invoice</Button></DialogTrigger>
     <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
       <DialogHeader><DialogTitle>Close session and create invoice?</DialogTitle><DialogDescription>This action locks the cart totals and starts the customer’s payment step. Check the invoice before confirming.</DialogDescription></DialogHeader>
       <div className="space-y-3 rounded-lg bg-muted/60 p-4 text-sm"><div className="flex justify-between gap-4"><span>Items</span><span className="font-medium">{session.productos.reduce((sum, product) => sum + product.cantidad, 0)}</span></div><div className="flex justify-between gap-4"><span>Subtotal</span><span>{formatCurrency(subtotal)}</span></div><div className="flex justify-between gap-4"><span>Florida tax (7%)</span><span>{formatCurrency(tax)}</span></div><div className="flex justify-between gap-4"><span>Brash3D fee (15%)</span><span>{formatCurrency(fee)}</span></div><div className="flex justify-between gap-4 border-t pt-3 text-base font-bold"><span>Total invoice</span><span>{formatCurrency(total)}</span></div></div>
@@ -396,6 +453,15 @@ async function createCustomerUrl(sessionId: string): Promise<string> {
 }
 
 function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewHistory?: (customerId: string) => void }) {
+  async function generateCustomerAccessLink() {
+    try {
+      const url = await createCustomerUrl(session.id)
+      await navigator.clipboard.writeText(url)
+    } catch {
+      // Open customer view remains available when clipboard access is blocked.
+    }
+  }
+
   async function openCustomerView() {
     const target = window.open("about:blank", "_blank")
     try {
@@ -415,14 +481,15 @@ function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewH
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild><Link href={`/seller?sessionId=${session.id}`}>{sellerActionLabel(session)}</Link></DropdownMenuItem>
         {onViewHistory && <DropdownMenuItem onSelect={() => onViewHistory(session.clienteId)}>View purchase history</DropdownMenuItem>}
+        <DropdownMenuItem onSelect={() => void generateCustomerAccessLink()}>Generate customer access link</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => void openCustomerView()}>Open customer view</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   )
 }
 
-export function SellerPanel({ sessionId }: SellerPanelProps) {
-  const { session, loading, error, addProduct, updateQuantity, removeProduct, close, start, updateDeliveryStatus } = useSession(sessionId)
+export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
+  const { session, loading, error, addProduct, updateQuantity, removeProduct, close, reopenForCorrection, start, updateDeliveryStatus } = useSession(sessionId)
   const [sessions, setSessions] = useState<SesionCompra[]>([])
   const [notifications, setNotifications] = useState<StaffNotification[]>([])
   const [activeNotificationId, setActiveNotificationId] = useState<string | null>(null)
@@ -814,18 +881,29 @@ export function SellerPanel({ sessionId }: SellerPanelProps) {
       }
     }
 
+    async function reopenClosedSession() {
+      setActionError("")
+      try {
+        await reopenForCorrection()
+      } catch (caughtError) {
+        const message = caughtError instanceof Error ? caughtError.message : "Unable to reopen session"
+        setActionError(message)
+        throw new Error(message)
+      }
+    }
+
     return (
       <SidebarProvider>
         <SellerSidebar active="sessions" onSelect={null} />
         <SidebarInset className="w-0 min-w-0">
-          <header className="flex items-center justify-between border-b bg-background px-4 py-4 lg:px-8"><div className="flex items-center gap-3"><SidebarTrigger /><div><Button asChild variant="link" className="h-auto p-0 text-muted-foreground"><Link href="/seller">Seller dashboard</Link></Button><h1 className="text-xl font-bold">{session.cliente.nombre}</h1></div></div><div className="flex items-center gap-3"><span className="font-mono font-semibold"><Clock className="mr-1 inline size-4" />{isActive ? `${minutes}:${seconds}` : "Not started"}</span><ModeToggle /><Button variant="outline" size="sm" onClick={() => void copyCustomerLink()}><Copy />Customer link</Button></div></header>
+          <header className="flex items-center justify-between border-b bg-background px-4 py-4 lg:px-8"><div className="flex items-center gap-3"><SidebarTrigger /><div><Button asChild variant="link" className="h-auto p-0 text-muted-foreground"><Link href="/seller">Seller dashboard</Link></Button><h1 className="text-xl font-bold">{session.cliente.nombre}</h1></div></div><div className="flex flex-wrap items-center justify-end gap-2"><span className="font-mono font-semibold"><Clock className="mr-1 inline size-4" />{isActive ? `${minutes}:${seconds}` : "Not started"}</span>{session.envio && <Badge variant="outline" aria-label={`Shipment status: ${shipmentStatusLabel(session.envio.estado)}`}>Shipment: {shipmentStatusLabel(session.envio.estado)}</Badge>}<ModeToggle /><Button variant="outline" size="sm" onClick={() => void copyCustomerLink()}><Copy />Customer link</Button></div></header>
           <div className="grid gap-6 p-4 lg:grid-cols-[1fr_340px] lg:p-8">
             <div className="space-y-6">
               {isWaiting && <Card><CardHeader><CardTitle>Session waiting to start</CardTitle><CardDescription>{scheduledAt.toLocaleString(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })} · {session.outlet}</CardDescription></CardHeader><CardContent className="space-y-3"><Button className="w-full" size="lg" disabled={!canStart} onClick={() => void beginSession()}><WhatsAppIcon />Start live session</Button>{!canStart && <p className="text-center text-xs text-muted-foreground">The booking payment must be confirmed before this session can start.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}
-              <Card><CardHeader><CardTitle className="text-xl">Add product</CardTitle><CardDescription>Cart changes sync to the customer screen.</CardDescription></CardHeader><CardContent><form onSubmit={submitProduct} className="grid gap-3 sm:grid-cols-2"><div className="space-y-2 sm:col-span-2"><Label htmlFor="product-name">Product name</Label><Input id="product-name" name="nombre" required /></div><div className="space-y-2"><Label htmlFor="product-sku">SKU</Label><Input id="product-sku" name="sku" /></div><div className="space-y-2"><Label htmlFor="product-price">Price USD</Label><Input id="product-price" name="precio" type="number" min="0.01" step="0.01" required /></div><div className="space-y-2"><Label htmlFor="product-quantity">Quantity</Label><Input id="product-quantity" name="cantidad" type="number" min="1" defaultValue="1" /></div><div className="space-y-2"><Label htmlFor="product-notes">Notes</Label><Input id="product-notes" name="notas" /></div>{actionError && <p className="text-sm text-destructive sm:col-span-2">{actionError}</p>}<Button className="sm:col-span-2" disabled={!isActive}><Plus />Add to cart</Button></form></CardContent></Card>
-              <Card><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ShoppingCart />Cart ({session.productos.length})</CardTitle></CardHeader><CardContent className="space-y-3">{session.productos.length === 0 && <p className="py-8 text-center text-muted-foreground">No products yet.</p>}{session.productos.map((product) => <div key={product.id} className="flex items-center gap-3 rounded-md bg-muted p-3"><div className="min-w-0 flex-1"><p className="truncate font-medium">{product.nombre}</p><p className="text-xs text-muted-foreground">{product.sku || "No SKU"}{product.notas ? ` · ${product.notas}` : ""}</p></div><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, -1)} disabled={!isActive}><Minus /></Button><span>{product.cantidad}</span><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, 1)} disabled={!isActive}><Plus /></Button><strong className="w-24 text-right">{formatCurrency(product.precio * product.cantidad)}</strong><Button size="icon" variant="ghost" onClick={() => void removeProduct(product.id)} disabled={!isActive}><Trash2 /></Button></div>)}</CardContent></Card>
+              {isActive && <Card><CardHeader><CardTitle className="text-xl">Add product</CardTitle><CardDescription>Cart changes sync to the customer screen.</CardDescription></CardHeader><CardContent><form onSubmit={submitProduct} className="grid gap-3 sm:grid-cols-2"><div className="space-y-2 sm:col-span-2"><Label htmlFor="product-name">Product name</Label><Input id="product-name" name="nombre" required /></div><div className="space-y-2"><Label htmlFor="product-sku">SKU</Label><Input id="product-sku" name="sku" /></div><div className="space-y-2"><Label htmlFor="product-price">Price USD</Label><Input id="product-price" name="precio" type="number" min="0.01" step="0.01" required /></div><div className="space-y-2"><Label htmlFor="product-quantity">Quantity</Label><Input id="product-quantity" name="cantidad" type="number" min="1" defaultValue="1" /></div><div className="space-y-2"><Label htmlFor="product-notes">Notes</Label><Input id="product-notes" name="notas" /></div>{actionError && <p className="text-sm text-destructive sm:col-span-2">{actionError}</p>}<Button className="sm:col-span-2"><Plus />Add to cart</Button></form></CardContent></Card>}
+              {session.estado === "completada" ? <ReadOnlyOrderDetails session={session} isAdmin={isAdmin} onReopen={reopenClosedSession} /> : <Card><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ShoppingCart />Cart ({session.productos.length})</CardTitle></CardHeader><CardContent className="space-y-3">{session.productos.length === 0 && <p className="py-8 text-center text-muted-foreground">No products yet.</p>}{session.productos.map((product) => <div key={product.id} className="flex items-center gap-3 rounded-md bg-muted p-3"><div className="min-w-0 flex-1"><p className="truncate font-medium">{product.nombre}</p><p className="text-xs text-muted-foreground">{product.sku || "No SKU"}{product.notas ? ` · ${product.notas}` : ""}</p></div><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, -1)}><Minus /></Button><span>{product.cantidad}</span><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, 1)}><Plus /></Button><strong className="w-24 text-right">{formatCurrency(product.precio * product.cantidad)}</strong><Button size="icon" variant="ghost" onClick={() => void removeProduct(product.id)}><Trash2 /></Button></div>)}</CardContent></Card>}
             </div>
-            <aside className="space-y-6"><Card><CardHeader><CardTitle className="text-xl">Order summary</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(session.subtotal)}</span></div><div className="flex justify-between"><span>Tax 7%</span><span>{formatCurrency(session.impuesto)}</span></div><div className="flex justify-between"><span>Fee 15%</span><span>{formatCurrency(session.comision)}</span></div><div className="flex justify-between pt-3 text-lg font-bold"><span>Total</span><span>{formatCurrency(session.total)}</span></div></CardContent></Card>{session.estado === "completada" && <Card><CardHeader><CardTitle className="text-xl">Customer delivery</CardTitle><CardDescription>{session.envio ? `Current status: ${session.envio.estado.replaceAll("_", " ")}` : "Create the shipment after the customer's 65% payment is confirmed."}</CardDescription></CardHeader><CardContent className="space-y-3">{session.deliveryAddress && <div className="rounded-md bg-muted p-3 text-sm"><p className="font-medium">Confirmed delivery address</p><p className="mt-1 text-muted-foreground">{session.deliveryAddress}</p><p className="text-muted-foreground">{session.deliveryCity}, Colombia</p></div>}{session.envio?.labelCode && <div className="rounded-md border p-3 text-sm"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><div className="min-w-0"><p className="text-xs text-muted-foreground">Customer shipment code</p><p className="mt-1 break-all font-mono font-semibold">{session.envio.labelCode}</p></div><Button type="button" size="sm" variant="outline" className="min-w-24 shrink-0 justify-center" onClick={() => void copyShipmentCode()}><Copy />{shipmentCodeCopied ? "Copied" : "Copy code"}</Button></div></div>}{nextDeliveryStep && hasInitialPayment(session) && <Button className="w-full" disabled={!session.deliveryAddress || !session.deliveryCity} onClick={() => void createShipment()}><Package />{nextDeliveryStep.label}</Button>}{!nextDeliveryStep && session.envio?.estado === "entregado" && <Badge><CheckCircle2 />Delivery confirmed</Badge>}{session.envio && session.envio.estado !== "entregado" && <p className="text-xs text-muted-foreground">USA operations handles consolidation. The Colombia team owns receipt, final payment, and delivery confirmation.</p>}{!hasInitialPayment(session) && <p className="text-xs text-muted-foreground">Waiting for the customer to confirm their address and pay 65%.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}<CloseSessionDialog session={session} open={closeDialogOpen} onOpenChange={setCloseDialogOpen} onConfirm={confirmCloseSession} isActive={isActive} /></aside>
+            <aside className="space-y-6"><Card><CardHeader><CardTitle className="text-xl">Order summary</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(session.subtotal)}</span></div><div className="flex justify-between"><span>Tax 7%</span><span>{formatCurrency(session.impuesto)}</span></div><div className="flex justify-between"><span>Fee 15%</span><span>{formatCurrency(session.comision)}</span></div><div className="flex justify-between pt-3 text-lg font-bold"><span>Total</span><span>{formatCurrency(session.total)}</span></div></CardContent></Card>{session.estado === "completada" && <Card><CardHeader><CardTitle className="text-xl">Customer delivery</CardTitle><CardDescription>{session.envio ? `Current status: ${shipmentStatusLabel(session.envio.estado)}` : "Create the shipment after the customer's 65% payment is confirmed."}</CardDescription></CardHeader><CardContent className="space-y-3">{session.deliveryAddress && <div className="rounded-md bg-muted p-3 text-sm"><p className="font-medium">Confirmed delivery address</p><p className="mt-1 text-muted-foreground">{session.deliveryAddress}</p><p className="text-muted-foreground">{session.deliveryCity}, Colombia</p></div>}{session.envio?.labelCode && <div className="rounded-md border p-3 text-sm"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><div className="min-w-0"><p className="text-xs text-muted-foreground">Customer shipment code</p><p className="mt-1 break-all font-mono font-semibold">{session.envio.labelCode}</p></div><Button type="button" size="sm" variant="outline" className="min-w-24 shrink-0 justify-center" onClick={() => void copyShipmentCode()}><Copy />{shipmentCodeCopied ? "Copied" : "Copy code"}</Button></div></div>}{nextDeliveryStep && hasInitialPayment(session) && <Button className="w-full" disabled={!session.deliveryAddress || !session.deliveryCity} onClick={() => void createShipment()}><Package />{nextDeliveryStep.label}</Button>}{!nextDeliveryStep && session.envio?.estado === "entregado" && <Badge><CheckCircle2 />Delivery confirmed</Badge>}{session.envio && session.envio.estado !== "entregado" && <p className="text-xs text-muted-foreground">USA operations handles consolidation. The Colombia team owns receipt, final payment, and delivery confirmation.</p>}{!hasInitialPayment(session) && <p className="text-xs text-muted-foreground">Waiting for the customer to confirm their address and pay 65%.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}<CloseSessionDialog session={session} open={closeDialogOpen} onOpenChange={setCloseDialogOpen} onConfirm={confirmCloseSession} isActive={isActive} /></aside>
           </div>
         </SidebarInset>
       </SidebarProvider>
@@ -897,7 +975,7 @@ export function SellerPanel({ sessionId }: SellerPanelProps) {
           {activeTab === "shipping" && <ShippingOperations boxes={boxes} readyShipments={readyShipments} selectedShipments={selectedShipments} courier={boxCourier} tracking={boxTracking} message={shippingMessage} onCourierChange={setBoxCourier} onTrackingChange={setBoxTracking} onToggleShipment={(id) => setSelectedShipments((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])} onCreateBox={createConsolidatedBox} onAssignShipments={assignShipmentsToBox} onDispatchBox={dispatchConsolidatedBox} />}
           {activeTab === "bookings" && <TableCard title="Bookings" description="Scheduled appointments and booking-payment readiness."><div className="space-y-3 border-b px-4 pb-4"><div className="flex flex-wrap gap-2">{(["upcoming", "today", "payment_pending", "in_progress", "completed", "all"] as BookingFilter[]).map((filter) => <Button key={filter} size="sm" variant={bookingFilter === filter ? "default" : "outline"} onClick={() => { setBookingFilter(filter); setPage(1) }}>{filter.replaceAll("_", " ")}</Button>)}</div><div className="grid gap-2 sm:grid-cols-[1fr_190px_auto]"><Input aria-label="Search bookings" placeholder="Search name, phone, or email" value={bookingSearch} onChange={(event) => { setBookingSearch(event.target.value); setPage(1) }} /><Input aria-label="Filter bookings by date" type="date" value={bookingFilterDate} onChange={(event) => { setBookingFilterDate(event.target.value); setPage(1) }} /><Button variant="ghost" disabled={!bookingSearch && !bookingFilterDate} onClick={() => { setBookingSearch(""); setBookingFilterDate(""); setPage(1) }}>Clear</Button></div><p className="text-xs text-muted-foreground">{filteredBookings.length} matching booking{filteredBookings.length === 1 ? "" : "s"} · nearest upcoming first</p></div><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>Date</TableHead><TableHead>Time</TableHead><TableHead>Booking payment</TableHead><TableHead>Appointment</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell><div className="flex items-center gap-2"><p className="font-medium">{item.cliente.nombre}</p>{item.id === nextBookingId && <Badge variant="outline">Next</Badge>}</div><p className="text-xs text-muted-foreground">{item.cliente.telefono}</p></TableCell><TableCell>{item.fechaProgramada ? formatDate(item.fechaProgramada) : "—"}</TableCell><TableCell>{item.horaProgramada || "—"}</TableCell><TableCell>{item.bookingEstado === "confirmada" || item.bookingEstado === "completada" ? <Badge><CheckCircle2 />{item.bookingFee > 0 ? "$20 paid" : "Referral reward"}</Badge> : <Badge variant="outline">Pending</Badge>}</TableCell><TableCell><BookingStage session={item} /></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredBookings.length} onChange={setPage} /></TableCard>}
           {activeTab === "customers" && <TableCard title="Customers" description="Customers with a booking or shopping session."><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>WhatsApp</TableHead><TableHead>City</TableHead><TableHead>Last activity</TableHead><TableHead className="text-right">Order value</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.clienteId}><TableCell><p className="font-medium">{item.cliente.nombre}</p><p className="text-xs text-muted-foreground">{item.cliente.email}</p></TableCell><TableCell>{item.cliente.telefono}</TableCell><TableCell>{item.cliente.ciudad || item.cliente.pais}</TableCell><TableCell>{formatDateTime(item.fechaInicio)}</TableCell><TableCell className="text-right font-medium">{formatCurrency(item.total)}</TableCell><TableCell className="text-right"><RowActions session={item} onViewHistory={openCustomerHistory} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={customers.length} onChange={setPage} /></TableCard>}
-          {activeTab === "sessions" && <TableCard title="Shopping sessions" description="Customer sessions and shipment progress."><div className="border-b px-4 py-4"><Input aria-label="Search sessions" placeholder="Search customer, session ID, or shipment code" value={sessionSearch} onChange={(event) => { setSessionSearch(event.target.value); setPage(1) }} /></div><p className="border-b px-4 py-3 text-xs text-muted-foreground">{filteredSessions.length} matching session{filteredSessions.length === 1 ? "" : "s"}</p><Table className="!w-full !table-fixed [&_th]:!py-2 [&_td]:!py-2"><TableHeader><TableRow><TableHead className="w-[13%]">Session ID</TableHead><TableHead className="w-[14%]">Date</TableHead><TableHead className="w-[21%]">Customer</TableHead><TableHead className="w-[20%]">Order stage</TableHead><TableHead className="w-[24%]">Shipment code</TableHead><TableHead className="w-[8%] text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell title={item.id} className="font-mono text-xs">{item.id.slice(-8).toUpperCase()}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDateTime(item.fechaHoraProgramada || item.fechaInicio)}</TableCell><TableCell>{item.cliente.nombre}</TableCell><TableCell className="whitespace-nowrap"><OrderStage session={item} /></TableCell><TableCell title={item.envio?.labelCode || "—"} className="max-w-48 font-mono text-xs"><span className="block truncate">{item.envio?.labelCode || "—"}</span></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredSessions.length} onChange={setPage} /></TableCard>}
+          {activeTab === "sessions" && <TableCard title="Shopping sessions" description="Customer sessions and shipment progress."><div className="border-b px-4 py-4"><Input aria-label="Search sessions" placeholder="Search customer, session ID, or shipment code" value={sessionSearch} onChange={(event) => { setSessionSearch(event.target.value); setPage(1) }} /></div><p className="border-b px-4 py-3 text-xs text-muted-foreground">{filteredSessions.length} matching session{filteredSessions.length === 1 ? "" : "s"}</p><Table className="!w-full !table-fixed [&_th]:!py-2 [&_td]:!py-2"><TableHeader><TableRow><TableHead className="w-[13%]">Session ID</TableHead><TableHead className="w-[14%]">Date</TableHead><TableHead className="w-[21%]">Customer</TableHead><TableHead className="w-[20%]">Assignment</TableHead><TableHead className="w-[20%]">Order stage</TableHead><TableHead className="w-[24%]">Shipment code</TableHead><TableHead className="w-[8%] text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell title={item.id} className="font-mono text-xs">{item.id.slice(-8).toUpperCase()}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDateTime(item.fechaHoraProgramada || item.fechaInicio)}</TableCell><TableCell>{item.cliente.nombre}</TableCell><TableCell><p className="text-sm font-medium">{item.vendedor.nombre}</p><p className="text-xs text-muted-foreground">{item.vendedor.tiendaAsignada || "Assigned seller"}</p></TableCell><TableCell className="whitespace-nowrap"><OrderStage session={item} /></TableCell><TableCell title={item.envio?.labelCode || "—"} className="max-w-48 font-mono text-xs"><span className="block truncate">{item.envio?.labelCode || "—"}</span></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredSessions.length} onChange={setPage} /></TableCard>}
           </>}
         </div>
       </SidebarInset>

@@ -13,7 +13,8 @@
     "db:migrate": "node scripts/migrate.mjs",
     "auth:create-staff": "node scripts/create-staff.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
-    "test:testsprite:preflight": "node scripts/testsprite-preflight.mjs"
+    "test:testsprite:preflight": "node scripts/testsprite-preflight.mjs",
+    "test:testsprite:fixtures": "node scripts/testsprite-fixtures.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.23",

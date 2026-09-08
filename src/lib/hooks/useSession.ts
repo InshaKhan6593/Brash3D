@@ -11,6 +11,7 @@ interface UseSessionReturn {
   updateQuantity: (productId: string, delta: number) => Promise<void>
   removeProduct: (productId: string) => Promise<void>
   close: () => Promise<void>
+  reopenForCorrection: () => Promise<void>
   start: () => Promise<void>
   updateDeliveryStatus: (status: EnvioEstado) => Promise<void>
   pay: (amount: "65", delivery: { address: string; city: string }) => Promise<boolean>
@@ -105,6 +106,10 @@ export function useSession(sessionId: string | null, accessToken?: string | null
     await mutate("close", {})
   }, [mutate])
 
+  const reopenForCorrection = useCallback(async () => {
+    await mutate("reopenForCorrection", {})
+  }, [mutate])
+
   const start = useCallback(async () => {
     await mutate("start", {})
   }, [mutate])
@@ -130,5 +135,5 @@ export function useSession(sessionId: string | null, accessToken?: string | null
     }
   }, [sessionId])
 
-  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, start, updateDeliveryStatus, pay, refresh }
+  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, reopenForCorrection, start, updateDeliveryStatus, pay, refresh }
 }

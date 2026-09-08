@@ -3,6 +3,7 @@ export type ReservaEstado = "pendiente_pago" | "confirmada" | "cancelada" | "com
 export type SesionEstado = "en_progreso" | "completada" | "cancelada"
 
 export type EnvioEstado = "preparacion" | "en_transito" | "en_aduanas" | "recibido_equipo_local" | "entregado" | "devuelto"
+export type PagoFinalMetodo = "stripe" | "efectivo" | "transferencia"
 
 export interface Producto {
   id: string
@@ -79,6 +80,8 @@ export interface SesionCompra {
   total: number
   paymentIntent65Id?: string
   paymentIntent35Id?: string
+  checkoutSession65Id?: string
+  checkoutSession35Id?: string
   montoPagado65: number
   montoPagado35: number
   deliveryAddress?: string
@@ -96,6 +99,7 @@ export interface Envio {
   deliveryCity?: string
   trackingNumber?: string
   transportadora?: string
+  metodoPagoRecibido?: PagoFinalMetodo
   fechaEnvio?: Date
   fechaEntregaEstimada?: Date
   fechaEntregaReal?: Date

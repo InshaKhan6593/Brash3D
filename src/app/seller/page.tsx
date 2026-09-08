@@ -6,5 +6,5 @@ export default async function SellerPage({ searchParams }: PageProps<"/seller">)
   const staff = await requireStaff(["admin", "seller"])
   if (!staff) redirect("/login")
   const { sessionId } = await searchParams
-  return <SellerPanel sessionId={typeof sessionId === "string" ? sessionId : null} />
+  return <SellerPanel sessionId={typeof sessionId === "string" ? sessionId : null} isAdmin={staff.role === "admin"} />
 }

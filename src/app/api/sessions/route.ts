@@ -7,6 +7,7 @@ import {
   updateProductQuantity,
   removeProductFromSession,
   closeSession,
+  reopenSessionForCorrection,
   rotateCustomerAccess,
   startSession,
   updateDeliveryStatus,
@@ -102,6 +103,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 })
     }
 
+    return NextResponse.json({ session })
+  }
+
+  if (action === "reopenForCorrection") {
+    if (staff.role !== "admin") {
+      return NextResponse.json({ error: "Only an admin can reopen a closed session" }, { status: 403 })
+    }
+    const session = await reopenSessionForCorrection(data.sessionId, staff.id)
+    if (!session) {
+      return NextResponse.json({ error: "Only a closed, unpaid session without a shipment or active checkout can be reopened" }, { status: 409 })
+    }
     return NextResponse.json({ session })
   }
 
