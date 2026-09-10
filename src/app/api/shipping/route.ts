@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { transaction } from "@/lib/db"
 import { listBoxManifests } from "@/lib/store/shippingStore"
@@ -6,14 +7,14 @@ import { listBoxManifests } from "@/lib/store/shippingStore"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-export async function GET() {
+async function GETHandler() {
   const staff = await requireStaff(["admin", "seller"])
   if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   if (staff.role === "seller" && !staff.sellerId) return NextResponse.json({ error: "Seller account is not linked" }, { status: 403 })
   return NextResponse.json({ boxes: await listBoxManifests(staff.role === "seller" ? staff.sellerId : undefined) })
 }
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   if (!requestHasSameOrigin(request)) return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
   const staff = await requireStaff(["admin", "seller"])
   if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -131,3 +132,6 @@ export async function POST(request: Request) {
     throw error
   }
 }
+
+export const GET = withErrorHandling("GET shipping", GETHandler)
+export const POST = withErrorHandling("POST shipping", POSTHandler)

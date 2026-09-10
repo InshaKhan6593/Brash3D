@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
+import { invalidBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff, verifyCustomerAccess } from "@/lib/auth"
+import { isValidPercentage } from "@/lib/payment-split"
 import {
   getSession,
   listSessions,
@@ -16,11 +18,16 @@ import {
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   if (!requestHasSameOrigin(request)) {
     return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
   }
-  const body = await request.json()
+  let body
+  try {
+    body = await request.json()
+  } catch {
+    return invalidBody()
+  }
   const { action, ...data } = body
 
   const staff = await requireStaff(["admin", "seller"])
@@ -97,7 +104,14 @@ export async function POST(request: Request) {
   }
 
   if (action === "close") {
-    const session = await closeSession(data.sessionId)
+    const initialPercentage = Number(data.initialPercentage)
+    if (!isValidPercentage(initialPercentage)) {
+      return NextResponse.json(
+        { error: "The up-front percentage must be greater than 0 and at most 100" },
+        { status: 400 }
+      )
+    }
+    const session = await closeSession(data.sessionId, initialPercentage)
 
     if (!session) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 })
@@ -138,7 +152,7 @@ export async function POST(request: Request) {
   return NextResponse.json({ error: "Invalid action" }, { status: 400 })
 }
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const { searchParams } = new URL(request.url)
   const id = searchParams.get("id")
 
@@ -170,3 +184,6 @@ export async function GET(request: Request) {
 
   return NextResponse.json({ session })
 }
+
+export const GET = withErrorHandling("GET sessions", GETHandler)
+export const POST = withErrorHandling("POST sessions", POSTHandler)

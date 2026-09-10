@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { invalidBody, withErrorHandling } from "@/lib/api"
 import { allowRequest, CUSTOMER_COOKIE, requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import {
   attachBookingCheckout,
@@ -11,11 +12,16 @@ import { getStripe } from "@/lib/stripe"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   if (!requestHasSameOrigin(request)) {
     return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
   }
-  const body = await request.json()
+  let body
+  try {
+    body = await request.json()
+  } catch {
+    return invalidBody()
+  }
 
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
     || request.headers.get("x-real-ip")
@@ -44,6 +50,7 @@ export async function POST(request: Request) {
     ciudad: city,
     pais: body.pais || "Colombia",
     referralCode,
+    requiresLocalInvoice: body.requiresLocalInvoice === true,
   }
 
   try {
@@ -125,7 +132,7 @@ export async function POST(request: Request) {
   }
 }
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   if (!await requireStaff(["admin", "seller"])) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -144,3 +151,6 @@ export async function GET(request: Request) {
 
   return NextResponse.json({ booking })
 }
+
+export const GET = withErrorHandling("GET bookings", GETHandler)
+export const POST = withErrorHandling("POST bookings", POSTHandler)

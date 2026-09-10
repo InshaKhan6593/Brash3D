@@ -4,10 +4,13 @@ import { randomBytes } from "node:crypto"
 import type { PoolClient, QueryResult, QueryResultRow } from "pg"
 import { generateCustomerToken } from "@/lib/auth"
 import { query, transaction } from "@/lib/db"
+import { clampPercentage, DEFAULT_INITIAL_PERCENTAGE, finalAmount, initialAmount, type PaymentStage } from "@/lib/payment-split"
+import { feeRate, referralRewardMonthlyCap, taxRate } from "@/lib/rates"
 import type { Cliente, CustomerPurchaseHistory, EnvioEstado, PagoFinalMetodo, Producto, Reserva, SesionCompra, TimeSlot, Vendedor } from "@/lib/types"
 
 export interface BookingCustomerInput extends Omit<Cliente, "id"> {
   referralCode?: string
+  requiresLocalInvoice?: boolean
 }
 
 interface SessionRow extends QueryResultRow {
@@ -29,6 +32,7 @@ interface SessionRow extends QueryResultRow {
   fecha_hora_programada: Date
   booking_estado: Reserva["estado"]
   booking_fee: string
+  requiere_factura_local: boolean
   fecha_programada: string | null
   hora_programada: string | null
   estado: SesionCompra["estado"]
@@ -36,12 +40,15 @@ interface SessionRow extends QueryResultRow {
   impuesto: string
   comision: string
   total: string
-  payment_intent_65_id: string | null
-  payment_intent_35_id: string | null
-  checkout_session_65_id: string | null
-  checkout_session_35_id: string | null
-  monto_pagado_65: string
-  monto_pagado_35: string
+  tasa_impuesto: string
+  tasa_comision: string
+  porcentaje_inicial: string
+  payment_intent_inicial_id: string | null
+  payment_intent_final_id: string | null
+  checkout_session_inicial_id: string | null
+  checkout_session_final_id: string | null
+  monto_pagado_inicial: string
+  monto_pagado_final: string
   direccion_entrega_sesion: string | null
   ciudad_entrega_sesion: string | null
   direccion_confirmada_at: Date | null
@@ -89,12 +96,14 @@ const SESSION_SELECT = `
     c.telefono AS cliente_telefono, c.ciudad AS cliente_ciudad, c.pais AS cliente_pais,
     sc.fecha_inicio, sc.started_at, sc.fecha_fin, r.fecha_hora AS fecha_hora_programada,
     r.estado AS booking_estado, r.monto_reserva::text AS booking_fee,
+    r.requiere_factura_local,
     r.fecha_hora::date::text AS fecha_programada,
     to_char(d.hora_inicio, 'HH24:MI') AS hora_programada, sc.estado,
     sc.subtotal::text, sc.impuesto::text, sc.comision::text, sc.total::text,
-    sc.payment_intent_65_id, sc.payment_intent_35_id,
-    sc.checkout_session_65_id, sc.checkout_session_35_id,
-    sc.monto_pagado_65::text, sc.monto_pagado_35::text,
+    sc.tasa_impuesto::text, sc.tasa_comision::text, sc.porcentaje_inicial::text,
+    sc.payment_intent_inicial_id, sc.payment_intent_final_id,
+    sc.checkout_session_inicial_id, sc.checkout_session_final_id,
+    sc.monto_pagado_inicial::text, sc.monto_pagado_final::text,
     sc.direccion_entrega AS direccion_entrega_sesion,
     sc.ciudad_entrega AS ciudad_entrega_sesion, sc.direccion_confirmada_at,
     e.id::text AS envio_id, e.caja_id::text, e.estado AS envio_estado, e.etiqueta_codigo,
@@ -156,6 +165,7 @@ function mapSession(row: SessionRow, products: Producto[]): SesionCompra {
     horaProgramada: row.hora_programada ? displayTime(row.hora_programada) : undefined,
     bookingEstado: row.booking_estado,
     bookingFee: Number(row.booking_fee),
+    requiresLocalInvoice: row.requiere_factura_local,
     outlet: row.tienda_asignada || undefined,
     fechaFin: row.fecha_fin ? new Date(row.fecha_fin) : undefined,
     estado: row.estado,
@@ -164,12 +174,15 @@ function mapSession(row: SessionRow, products: Producto[]): SesionCompra {
     impuesto: Number(row.impuesto),
     comision: Number(row.comision),
     total: Number(row.total),
-    paymentIntent65Id: row.payment_intent_65_id || undefined,
-    paymentIntent35Id: row.payment_intent_35_id || undefined,
-    checkoutSession65Id: row.checkout_session_65_id || undefined,
-    checkoutSession35Id: row.checkout_session_35_id || undefined,
-    montoPagado65: Number(row.monto_pagado_65),
-    montoPagado35: Number(row.monto_pagado_35),
+    tasaImpuesto: Number(row.tasa_impuesto),
+    tasaComision: Number(row.tasa_comision),
+    porcentajeInicial: Number(row.porcentaje_inicial),
+    paymentIntentInicialId: row.payment_intent_inicial_id || undefined,
+    paymentIntentFinalId: row.payment_intent_final_id || undefined,
+    checkoutSessionInicialId: row.checkout_session_inicial_id || undefined,
+    checkoutSessionFinalId: row.checkout_session_final_id || undefined,
+    montoPagadoInicial: Number(row.monto_pagado_inicial),
+    montoPagadoFinal: Number(row.monto_pagado_final),
     deliveryAddress: row.direccion_entrega_sesion || undefined,
     deliveryCity: row.ciudad_entrega_sesion || undefined,
     deliveryAddressConfirmedAt: row.direccion_confirmada_at ? new Date(row.direccion_confirmada_at) : undefined,
@@ -190,6 +203,15 @@ function mapSession(row: SessionRow, products: Producto[]): SesionCompra {
       costoEnvio: Number(row.costo_envio || 0),
     } : undefined,
   }
+}
+
+function formatMoney(amount: number): string {
+  return `$${amount.toFixed(2)}`
+}
+
+// 65 renders as "65%", 33.5 as "33.5%" — no trailing zeros on whole numbers.
+function formatPercentage(value: number): string {
+  return `${Number(value.toFixed(2))}%`
 }
 
 async function ensureAvailability(): Promise<void> {
@@ -283,22 +305,26 @@ export async function createBookingWithSession(
       created_at: Date
     }>(`
       INSERT INTO reservas (
-        cliente_id, disponibilidad_id, fecha_hora, estado, monto_reserva, hold_expires_at
+        cliente_id, disponibilidad_id, fecha_hora, estado, monto_reserva, hold_expires_at,
+        requiere_factura_local
       )
       VALUES (
         $1::uuid, $2::uuid,
         ($3::date + $4::time) AT TIME ZONE 'America/New_York',
-        'pendiente_pago', 20.00, now() + ($5 * interval '1 minute')
+        'pendiente_pago', 20.00, now() + ($5 * interval '1 minute'), $6
       )
       RETURNING id::text, fecha_hora, estado, monto_reserva::text, hold_expires_at, created_at
-    `, [customerId, slotId, slot.date, slot.start_time, bookingHoldMinutes()])
+    `, [customerId, slotId, slot.date, slot.start_time, bookingHoldMinutes(),
+      Boolean(customer.requiresLocalInvoice)])
     const bookingRow = bookingResult.rows[0]
 
     const sessionResult = await client.query<{ id: string }>(`
-      INSERT INTO sesiones_compra (reserva_id, vendedor_id, cliente_id)
-      VALUES ($1::uuid, $2::uuid, $3::uuid)
+      INSERT INTO sesiones_compra (
+        reserva_id, vendedor_id, cliente_id, tasa_impuesto, tasa_comision
+      )
+      VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5)
       RETURNING id::text
-    `, [bookingRow.id, slot.seller_id, customerId])
+    `, [bookingRow.id, slot.seller_id, customerId, taxRate(), feeRate()])
 
     const rewardApplied = await applyPendingReferralReward(
       client,
@@ -331,6 +357,7 @@ export async function createBookingWithSession(
       estado: rewardApplied ? "confirmada" : bookingRow.estado,
       montoReserva: rewardApplied ? 0 : Number(bookingRow.monto_reserva),
       holdExpiresAt: new Date(bookingRow.hold_expires_at),
+      requiresLocalInvoice: Boolean(customer.requiresLocalInvoice),
       createdAt: new Date(bookingRow.created_at),
     }
     const session = await getSessionWithClient(clientQuery(client), sessionResult.rows[0].id)
@@ -385,7 +412,7 @@ function bookingHoldMinutes(): number {
   return Number.isInteger(configured) && configured >= 5 && configured <= 30 ? configured : 15
 }
 
-export async function releaseExpiredBookingHolds(
+async function releaseExpiredBookingHolds(
   client?: PoolClient,
   slotId?: string
 ): Promise<number> {
@@ -528,6 +555,29 @@ export async function processBookingCheckoutEvent(input: {
       outcome = "released"
     }
 
+    // The caller refunds a payment that arrived after the hold expired. Record
+    // it so the refund is auditable and staff can answer the customer's call.
+    if (outcome === "late_payment" && input.latePaymentRefunded && booking) {
+      await client.query(`
+        INSERT INTO payment_logs (
+          payment_intent_id, reserva_id, monto, tipo_pago, estado, metadata
+        ) VALUES ($1, $2::uuid, $3, 'booking_fee', 'refunded', $4::jsonb)
+        ON CONFLICT DO NOTHING
+      `, [input.paymentIntentId || input.checkoutSessionId, booking.id, booking.monto_reserva,
+        JSON.stringify({ checkoutSessionId: input.checkoutSessionId, eventId: input.eventId, reason: "hold_expired" })])
+      await client.query(`
+        INSERT INTO staff_notifications (seller_id, type, title, message, reserva_id)
+        SELECT sc.vendedor_id, 'booking_payment_refunded',
+          'Booking payment refunded',
+          c.nombre || '''s booking fee arrived after the slot hold expired and was refunded automatically.', r.id
+        FROM reservas r
+        JOIN sesiones_compra sc ON sc.reserva_id = r.id
+        JOIN clientes c ON c.id = r.cliente_id
+        WHERE r.id = $1::uuid
+        ON CONFLICT (type, reserva_id) WHERE reserva_id IS NOT NULL DO NOTHING
+      `, [booking.id])
+    }
+
     if (outcome !== "late_payment" || input.latePaymentRefunded) {
       await client.query(`
         INSERT INTO stripe_webhook_events (event_id, event_type) VALUES ($1, $2)
@@ -622,11 +672,12 @@ export async function getBooking(id: string): Promise<Reserva | null> {
     hora: string
     estado: Reserva["estado"]
     monto_reserva: string
+    requiere_factura_local: boolean
     created_at: Date
   }>(`
     SELECT r.id::text, r.cliente_id::text, c.nombre, c.email, c.telefono, c.ciudad, c.pais,
       r.fecha_hora, to_char(d.hora_inicio, 'HH24:MI') AS hora, r.estado,
-      r.monto_reserva::text, r.created_at
+      r.monto_reserva::text, r.requiere_factura_local, r.created_at
     FROM reservas r
     JOIN clientes c ON c.id = r.cliente_id
     JOIN disponibilidad d ON d.id = r.disponibilidad_id
@@ -650,6 +701,7 @@ export async function getBooking(id: string): Promise<Reserva | null> {
     hora: displayTime(row.hora),
     estado: row.estado,
     montoReserva: Number(row.monto_reserva),
+    requiresLocalInvoice: row.requiere_factura_local,
     createdAt: new Date(row.created_at),
   }
 }
@@ -749,9 +801,9 @@ export async function getCustomerPurchaseHistory(
         outlet: session.outlet,
         status: session.estado,
         shipmentStatus: session.envio?.estado,
-        paymentStatus: session.montoPagado65 + session.montoPagado35 >= session.total - 0.01
+        paymentStatus: session.montoPagadoInicial + session.montoPagadoFinal >= session.total - 0.01
           ? "paid"
-          : session.montoPagado65 > 0
+          : session.montoPagadoInicial > 0
             ? "partial"
             : "pending",
         trackingNumber: session.envio?.trackingNumber,
@@ -780,9 +832,11 @@ async function recalculateTotals(client: PoolClient, sessionId: string): Promise
   await client.query(`
     UPDATE sesiones_compra sc SET
       subtotal = totals.subtotal,
-      impuesto = round(totals.subtotal * 0.07, 2),
-      comision = round(totals.subtotal * 0.15, 2),
-      total = totals.subtotal + round(totals.subtotal * 0.07, 2) + round(totals.subtotal * 0.15, 2)
+      impuesto = round(totals.subtotal * sc.tasa_impuesto, 2),
+      comision = round(totals.subtotal * sc.tasa_comision, 2),
+      total = totals.subtotal
+        + round(totals.subtotal * sc.tasa_impuesto, 2)
+        + round(totals.subtotal * sc.tasa_comision, 2)
     FROM (
       SELECT $1::uuid AS session_id,
         COALESCE(sum(precio_unitario * cantidad), 0)::numeric(10,2) AS subtotal
@@ -848,12 +902,17 @@ export async function removeProductFromSession(
   })
 }
 
-export async function closeSession(sessionId: string): Promise<SesionCompra | null> {
+// The share charged up front is chosen per order by the seller: some customers
+// pay in full, others 85/15 or 65/35.
+export async function closeSession(
+  sessionId: string,
+  initialPercentage: number = DEFAULT_INITIAL_PERCENTAGE
+): Promise<SesionCompra | null> {
   const result = await query(`
     UPDATE sesiones_compra
-    SET estado = 'completada', fecha_fin = COALESCE(fecha_fin, NOW())
+    SET estado = 'completada', fecha_fin = COALESCE(fecha_fin, NOW()), porcentaje_inicial = $2
     WHERE id::text = $1 AND estado = 'en_progreso' AND started_at IS NOT NULL AND total > 0
-  `, [sessionId])
+  `, [sessionId, clampPercentage(initialPercentage)])
   if (!result.rowCount) return null
   return getSession(sessionId)
 }
@@ -862,20 +921,20 @@ export async function reopenSessionForCorrection(sessionId: string, staffUserId:
   return transaction(async (client) => {
     const current = await client.query<{
       estado: SesionCompra["estado"]
-      monto_pagado_65: string
-      payment_intent_65_id: string | null
+      monto_pagado_inicial: string
+      payment_intent_inicial_id: string | null
       envio_id: string | null
-      checkout_session_65_id: string | null
+      checkout_session_inicial_id: string | null
     }>(`
-      SELECT sc.estado, sc.monto_pagado_65::text, sc.payment_intent_65_id,
-        e.id::text AS envio_id, sc.checkout_session_65_id
+      SELECT sc.estado, sc.monto_pagado_inicial::text, sc.payment_intent_inicial_id,
+        e.id::text AS envio_id, sc.checkout_session_inicial_id
       FROM sesiones_compra sc
       LEFT JOIN envios e ON e.sesion_id = sc.id
       WHERE sc.id::text = $1
       FOR UPDATE OF sc
     `, [sessionId])
     const session = current.rows[0]
-    if (!session || session.estado !== "completada" || Number(session.monto_pagado_65) > 0 || session.payment_intent_65_id || session.envio_id || session.checkout_session_65_id) return null
+    if (!session || session.estado !== "completada" || Number(session.monto_pagado_inicial) > 0 || session.payment_intent_inicial_id || session.envio_id || session.checkout_session_inicial_id) return null
 
     await client.query(`
       UPDATE sesiones_compra
@@ -912,7 +971,7 @@ export async function updateDeliveryStatus(
       LEFT JOIN envios e ON e.sesion_id = sc.id
       WHERE sc.id::text = $1
         AND sc.estado = 'completada'
-        AND sc.monto_pagado_65 > 0
+        AND sc.monto_pagado_inicial > 0
       FOR UPDATE OF sc
     `, [sessionId])
     if (!sessionResult.rows[0]) return null
@@ -945,22 +1004,22 @@ export async function updateDeliveryStatus(
 
 export async function attachSessionCheckout(
   sessionId: string,
-  stage: "65" | "35",
+  stage: PaymentStage,
   checkoutSessionId: string
 ): Promise<boolean> {
-  const column = stage === "65" ? "checkout_session_65_id" : "checkout_session_35_id"
-  const eligibility = stage === "65"
-    ? "estado = 'completada' AND total > 0 AND monto_pagado_65 = 0"
-    : "estado = 'completada' AND monto_pagado_65 > 0 AND monto_pagado_35 = 0"
+  const column = stage === "inicial" ? "checkout_session_inicial_id" : "checkout_session_final_id"
+  const eligibility = stage === "inicial"
+    ? "estado = 'completada' AND total > 0 AND monto_pagado_inicial = 0"
+    : "estado = 'completada' AND monto_pagado_inicial > 0 AND monto_pagado_final = 0 AND porcentaje_inicial < 100"
   const result = await query(`UPDATE sesiones_compra SET ${column} = $2 WHERE id::text = $1 AND ${eligibility}`, [sessionId, checkoutSessionId])
   return Boolean(result.rowCount)
 }
 
 export async function clearSessionCheckout(
   checkoutSessionId: string,
-  stage: "65" | "35"
+  stage: PaymentStage
 ): Promise<void> {
-  const column = stage === "65" ? "checkout_session_65_id" : "checkout_session_35_id"
+  const column = stage === "inicial" ? "checkout_session_inicial_id" : "checkout_session_final_id"
   await query(`UPDATE sesiones_compra SET ${column} = NULL WHERE ${column} = $1`, [checkoutSessionId])
 }
 
@@ -968,23 +1027,25 @@ export async function processSessionCheckoutEvent(input: {
   eventId: string
   checkoutSessionId: string
   paymentIntentId?: string | null
-  stage: "65" | "35"
+  stage: PaymentStage
   paid: boolean
 }): Promise<"confirmed" | "ignored" | "duplicate"> {
   return transaction(async (client) => {
     const duplicate = await client.query("SELECT 1 FROM stripe_webhook_events WHERE event_id = $1", [input.eventId])
     if (duplicate.rowCount) return "duplicate"
-    const column = input.stage === "65" ? "checkout_session_65_id" : "checkout_session_35_id"
+    const column = input.stage === "inicial" ? "checkout_session_inicial_id" : "checkout_session_final_id"
     const result = await client.query<{
       id: string
       total: string
+      porcentaje_inicial: string
       seller_id: string
       customer_id: string
       reserva_id: string
       customer_name: string
       referrer_id: string | null
     }>(`
-      SELECT sc.id::text, sc.total::text, sc.vendedor_id::text AS seller_id,
+      SELECT sc.id::text, sc.total::text, sc.porcentaje_inicial::text,
+        sc.vendedor_id::text AS seller_id,
         sc.cliente_id::text AS customer_id, sc.reserva_id::text AS reserva_id,
         c.nombre AS customer_name, c.referido_por_id::text AS referrer_id
       FROM sesiones_compra sc JOIN clientes c ON c.id = sc.cliente_id
@@ -993,21 +1054,38 @@ export async function processSessionCheckoutEvent(input: {
     const session = result.rows[0]
     let outcome: "confirmed" | "ignored" = "ignored"
     if (session && input.paid) {
-      const amount = Number(session.total) * (input.stage === "65" ? 0.65 : 0.35)
+      const percentage = Number(session.porcentaje_inicial)
+      const amount = input.stage === "inicial"
+        ? initialAmount(Number(session.total), percentage)
+        : finalAmount(Number(session.total), percentage)
       const updated = await client.query(`
         UPDATE sesiones_compra SET
-          ${input.stage === "65" ? "monto_pagado_65 = round(total * 0.65, 2), payment_intent_65_id" : "monto_pagado_35 = round(total * 0.35, 2), payment_intent_35_id"} = $2
-        WHERE id = $1::uuid AND ${input.stage === "65" ? "monto_pagado_65" : "monto_pagado_35"} = 0
-      `, [session.id, input.paymentIntentId || input.checkoutSessionId])
+          ${input.stage === "inicial" ? "monto_pagado_inicial" : "monto_pagado_final"} = $3,
+          ${input.stage === "inicial" ? "payment_intent_inicial_id" : "payment_intent_final_id"} = $2
+        WHERE id = $1::uuid AND ${input.stage === "inicial" ? "monto_pagado_inicial" : "monto_pagado_final"} = 0
+      `, [session.id, input.paymentIntentId || input.checkoutSessionId, amount.toFixed(2)])
       if (updated.rowCount) {
-        if (input.stage === "35") {
+        if (input.stage === "final") {
           await client.query(`UPDATE envios SET estado='entregado', metodo_pago_recibido='stripe', asignacion_pago_final='ingreso_llc_usa', fecha_entrega_real=COALESCE(fecha_entrega_real,now()) WHERE sesion_id=$1::uuid`, [session.id])
         }
-        if (input.stage === "65") {
+        if (input.stage === "inicial") {
           await grantReferralRewardForInitialPayment(client, session)
         }
-        await client.query(`INSERT INTO payment_logs(payment_intent_id,sesion_id,monto,tipo_pago,estado,metadata) VALUES($1,$2::uuid,$3,$4,'succeeded',$5::jsonb)`, [input.paymentIntentId || input.checkoutSessionId, session.id, amount.toFixed(2), input.stage === "65" ? "session_65" : "session_35", JSON.stringify({ checkoutSessionId: input.checkoutSessionId, eventId: input.eventId })])
-        await client.query(`INSERT INTO staff_notifications(seller_id,type,title,message) VALUES($1::uuid,$2,$3,$4)`, [session.seller_id, input.stage === "65" ? "initial_payment_confirmed" : "final_payment_confirmed", input.stage === "65" ? "65% payment received" : "Final payment received", `${session.customer_name}'s ${input.stage}% payment was confirmed by Stripe.`])
+        await client.query(`INSERT INTO payment_logs(payment_intent_id,sesion_id,monto,tipo_pago,estado,metadata) VALUES($1,$2::uuid,$3,$4,'succeeded',$5::jsonb)`, [input.paymentIntentId || input.checkoutSessionId, session.id, amount.toFixed(2), input.stage === "inicial" ? "session_inicial" : "session_final", JSON.stringify({ checkoutSessionId: input.checkoutSessionId, eventId: input.eventId })])
+        // The split is per order, so the notification states the amount and the
+        // order's own percentage rather than a hard-coded 65/35.
+        const share = input.stage === "inicial"
+          ? `${formatPercentage(percentage)} up-front`
+          : `${formatPercentage(100 - percentage)} final`
+        await client.query(
+          `INSERT INTO staff_notifications(seller_id,type,title,message) VALUES($1::uuid,$2,$3,$4)`,
+          [
+            session.seller_id,
+            input.stage === "inicial" ? "initial_payment_confirmed" : "final_payment_confirmed",
+            input.stage === "inicial" ? "Initial payment received" : "Final payment received",
+            `${session.customer_name} paid ${formatMoney(amount)} (${share}), confirmed by Stripe.`,
+          ]
+        )
         outcome = "confirmed"
       }
     }
@@ -1032,10 +1110,21 @@ async function grantReferralRewardForInitialPayment(
     FROM sesiones_compra
     WHERE cliente_id = $1::uuid
       AND id <> $2::uuid
-      AND monto_pagado_65 > 0
+      AND monto_pagado_inicial > 0
     LIMIT 1
   `, [session.customer_id, session.id])
   if (priorPaidSession.rowCount) return
+
+  // One referrer may only earn a limited number of complimentary bookings per
+  // calendar month, otherwise the program is trivially farmed with fake accounts.
+  const cap = referralRewardMonthlyCap()
+  const grantedThisMonth = await client.query<{ count: string }>(`
+    SELECT count(*)::text AS count
+    FROM referidos_recompensas
+    WHERE referidor_id = $1::uuid
+      AND created_at >= date_trunc('month', now())
+  `, [session.referrer_id])
+  if (Number(grantedThisMonth.rows[0]?.count || 0) >= cap) return
 
   await client.query(`
     INSERT INTO referidos_recompensas (

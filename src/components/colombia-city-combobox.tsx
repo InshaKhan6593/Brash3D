@@ -56,7 +56,7 @@ export function ColombiaCityCombobox({ defaultValue = "" }: { defaultValue?: str
       minLength={2}
       maxLength={100}
       autoComplete="off"
-      placeholder="Search city"
+      placeholder="Busca tu ciudad"
       required
       onFocus={() => setOpen(true)}
       onBlur={() => window.setTimeout(() => setOpen(false), 100)}

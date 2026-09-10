@@ -1,12 +1,10 @@
-import { randomBytes, scrypt as scryptCallback } from "node:crypto"
-import { promisify } from "node:util"
 import process from "node:process"
 import nextEnv from "@next/env"
 import pg from "pg"
+import { hashPassword } from "../src/lib/password.mjs"
 
 const { loadEnvConfig } = nextEnv
 loadEnvConfig(process.cwd())
-const scrypt = promisify(scryptCallback)
 const [emailInput, password, roleInput = "admin", ...nameParts] = process.argv.slice(2)
 const email = emailInput?.trim().toLowerCase()
 const role = roleInput.trim().toLowerCase()
@@ -20,8 +18,7 @@ if (!password || password.length < 12 || !/[A-Z]/.test(password) || !/[a-z]/.tes
 }
 if (!["admin", "seller", "local_team"].includes(role)) throw new Error("Invalid role")
 
-const salt = randomBytes(16).toString("base64url")
-const derived = await scrypt(password, salt, 64, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 })
+const { hash, salt } = await hashPassword(password)
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 1 })
 try {
   let sellerId = null
@@ -55,7 +52,7 @@ try {
       active = true,
       failed_attempts = 0,
       locked_until = NULL
-  `, [name, email, Buffer.from(derived).toString("base64url"), salt, role, sellerId, localTeamId])
+  `, [name, email, hash, salt, role, sellerId, localTeamId])
   console.log(`${role} account is ready: ${email}`)
 } finally {
   await pool.end()

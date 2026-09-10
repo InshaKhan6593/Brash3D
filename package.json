@@ -14,9 +14,12 @@
     "auth:create-staff": "node scripts/create-staff.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:testsprite:preflight": "node scripts/testsprite-preflight.mjs",
-    "test:testsprite:fixtures": "node scripts/testsprite-fixtures.mjs"
+    "test:testsprite:fixtures": "node scripts/testsprite-fixtures.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "@radix-ui/react-checkbox": "^1.3.11",
     "@radix-ui/react-dialog": "^1.1.23",
     "@radix-ui/react-dropdown-menu": "^2.1.24",
     "@radix-ui/react-label": "^2.1.15",
@@ -36,13 +39,14 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^22.20.2",
     "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^5.0.0"
   }
 }

@@ -10,11 +10,11 @@ interface UseSessionReturn {
   addProduct: (product: Omit<Producto, "id" | "addedAt">) => Promise<void>
   updateQuantity: (productId: string, delta: number) => Promise<void>
   removeProduct: (productId: string) => Promise<void>
-  close: () => Promise<void>
+  close: (initialPercentage: number) => Promise<void>
   reopenForCorrection: () => Promise<void>
   start: () => Promise<void>
   updateDeliveryStatus: (status: EnvioEstado) => Promise<void>
-  pay: (amount: "65", delivery: { address: string; city: string }) => Promise<boolean>
+  pay: (delivery: { address: string; city: string }) => Promise<boolean>
   refresh: () => Promise<void>
 }
 
@@ -102,8 +102,8 @@ export function useSession(sessionId: string | null, accessToken?: string | null
     await mutate("removeProduct", { productId })
   }, [mutate])
 
-  const close = useCallback(async () => {
-    await mutate("close", {})
+  const close = useCallback(async (initialPercentage: number) => {
+    await mutate("close", { initialPercentage })
   }, [mutate])
 
   const reopenForCorrection = useCallback(async () => {
@@ -118,13 +118,13 @@ export function useSession(sessionId: string | null, accessToken?: string | null
     await mutate("updateDeliveryStatus", { status })
   }, [mutate])
 
-  const pay = useCallback(async (amount: "65", delivery: { address: string; city: string }): Promise<boolean> => {
+  const pay = useCallback(async (delivery: { address: string; city: string }): Promise<boolean> => {
     try {
       if (!sessionId) return false
       const response = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, stage: amount, ...delivery }),
+        body: JSON.stringify({ sessionId, stage: "inicial", ...delivery }),
       })
       const result = await response.json() as { checkoutUrl?: string }
       if (!response.ok || !result.checkoutUrl) return false

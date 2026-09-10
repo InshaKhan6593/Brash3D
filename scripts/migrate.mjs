@@ -24,6 +24,24 @@ try {
     )
   `)
 
+  // A fresh Supabase project already ships a `supabase_realtime` publication, so
+  // migration 001's CREATE PUBLICATION would fail before anything else could run.
+  // Only drop it when the database is genuinely empty; an existing database keeps
+  // its publication, its data, and every recorded checksum untouched.
+  const untouched = await pool.query(`
+    SELECT to_regclass('public.clientes') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM schema_migrations) AS empty
+  `)
+  if (untouched.rows[0]?.empty) {
+    const publication = await pool.query(
+      "SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime'"
+    )
+    if (publication.rowCount) {
+      await pool.query("DROP PUBLICATION supabase_realtime")
+      console.log("Dropped the provider's pre-created supabase_realtime publication so 001 can define it")
+    }
+  }
+
   const files = (await readdir(migrationsDirectory))
     .filter((name) => /^\d+.*\.sql$/.test(name))
     .sort()

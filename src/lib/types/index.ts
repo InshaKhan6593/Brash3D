@@ -50,6 +50,7 @@ export interface Reserva {
   hora: string
   estado: ReservaEstado
   montoReserva: number
+  requiresLocalInvoice?: boolean
   paymentIntentId?: string
   holdExpiresAt?: Date
   checkoutSessionId?: string
@@ -70,6 +71,7 @@ export interface SesionCompra {
   horaProgramada?: string
   bookingEstado: ReservaEstado
   bookingFee: number
+  requiresLocalInvoice?: boolean
   outlet?: string
   fechaFin?: Date
   estado: SesionEstado
@@ -78,12 +80,15 @@ export interface SesionCompra {
   impuesto: number
   comision: number
   total: number
-  paymentIntent65Id?: string
-  paymentIntent35Id?: string
-  checkoutSession65Id?: string
-  checkoutSession35Id?: string
-  montoPagado65: number
-  montoPagado35: number
+  tasaImpuesto: number
+  tasaComision: number
+  paymentIntentInicialId?: string
+  paymentIntentFinalId?: string
+  checkoutSessionInicialId?: string
+  checkoutSessionFinalId?: string
+  montoPagadoInicial: number
+  montoPagadoFinal: number
+  porcentajeInicial: number
   deliveryAddress?: string
   deliveryCity?: string
   deliveryAddressConfirmedAt?: Date
@@ -107,6 +112,20 @@ export interface Envio {
   costoEnvio: number
 }
 
+// Accounting metadata only. The system never moves money between Brash3D
+// Media Group LLC (USA) and Brash3D SAS (Colombia); it only records which side
+// collected each final payment.
+export interface BoxSettlement {
+  collected: number
+  viaStripe: number
+  localFund: number
+  cash: number
+  transfer: number
+  pending: number
+  deliveredCount: number
+  pendingCount: number
+}
+
 export interface ConsolidatedBoxManifest {
   id: string
   number: string
@@ -119,6 +138,7 @@ export interface ConsolidatedBoxManifest {
   customerCount: number
   productLines: number
   totalUnits: number
+  settlement: BoxSettlement
   packages: Array<{
     sessionId: string
     labelCode: string
@@ -127,16 +147,11 @@ export interface ConsolidatedBoxManifest {
     deliveryAddress: string
     deliveryCity: string
     remainingBalance: number
+    collectedAmount: number
+    paymentMethod?: PagoFinalMetodo
+    requiresLocalInvoice: boolean
     products: Array<{ name: string; quantity: number; price: number }>
   }>
-}
-
-export interface TimelineEvent {
-  id: string
-  title: string
-  description?: string
-  date: Date
-  status: "completed" | "current" | "pending"
 }
 
 export interface PurchaseHistoryItem {

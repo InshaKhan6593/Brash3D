@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server"
+import { withErrorHandling } from "@/lib/api"
+import { logger } from "@/lib/logger"
 import type Stripe from "stripe"
 import { clearSessionCheckout, processBookingCheckoutEvent, processSessionCheckoutEvent } from "@/lib/store/sessionStore"
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe"
@@ -6,7 +8,7 @@ import { getStripe, getStripeWebhookSecret } from "@/lib/stripe"
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-export async function POST(request: Request) {
+async function POSTHandler(request: Request) {
   const signature = request.headers.get("stripe-signature")
   if (!signature) return NextResponse.json({ error: "Missing Stripe signature" }, { status: 400 })
 
@@ -17,7 +19,8 @@ export async function POST(request: Request) {
       signature,
       getStripeWebhookSecret()
     )
-  } catch {
+  } catch (error) {
+    logger.error("Stripe webhook signature verification failed", { error })
     return NextResponse.json({ error: "Invalid Stripe webhook signature" }, { status: 400 })
   }
 
@@ -30,12 +33,19 @@ export async function POST(request: Request) {
     ? checkout.payment_intent
     : checkout.payment_intent?.id
   const paymentStage = checkout.metadata?.payment_stage
-  if (paymentStage === "session_65" || paymentStage === "session_35") {
-    const stage = paymentStage === "session_65" ? "65" : "35"
+  // "session_65"/"session_35" are accepted for checkouts opened before the split
+  // became configurable, so a payment already in flight still reconciles.
+  const stage = paymentStage === "session_inicial" || paymentStage === "session_65"
+    ? "inicial"
+    : paymentStage === "session_final" || paymentStage === "session_35"
+      ? "final"
+      : null
+  if (stage) {
     if (event.type === "checkout.session.expired") {
       await clearSessionCheckout(checkout.id, stage)
       return NextResponse.json({ received: true, outcome: "expired" })
     }
+    logger.info("Stripe session checkout received", { eventId: event.id, stage, checkoutSessionId: checkout.id })
     const outcome = await processSessionCheckoutEvent({
       eventId: event.id,
       checkoutSessionId: checkout.id,
@@ -43,6 +53,7 @@ export async function POST(request: Request) {
       stage,
       paid: checkout.payment_status === "paid",
     })
+    logger.info("Stripe session checkout processed", { eventId: event.id, stage, outcome })
     return NextResponse.json({ received: true, outcome })
   }
   const input = {
@@ -55,6 +66,7 @@ export async function POST(request: Request) {
 
   let outcome = await processBookingCheckoutEvent(input)
   if (outcome === "late_payment" && paymentIntentId) {
+    logger.warn("Refunding a booking payment that arrived after the hold expired", { eventId: event.id, checkoutSessionId: checkout.id })
     await getStripe().refunds.create(
       { payment_intent: paymentIntentId, reason: "requested_by_customer" },
       { idempotencyKey: `expired-booking-${checkout.id}` }
@@ -62,5 +74,8 @@ export async function POST(request: Request) {
     outcome = await processBookingCheckoutEvent({ ...input, latePaymentRefunded: true })
   }
 
+  logger.info("Stripe booking checkout processed", { eventId: event.id, type: event.type, outcome })
   return NextResponse.json({ received: true, outcome })
 }
+
+export const POST = withErrorHandling("POST stripe/webhook", POSTHandler)

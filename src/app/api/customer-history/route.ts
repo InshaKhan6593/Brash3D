@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server"
+import { withErrorHandling } from "@/lib/api"
 import { requireStaff, verifyCustomerAccess } from "@/lib/auth"
 import { getCustomerIdForSession, getCustomerPurchaseHistory } from "@/lib/store/sessionStore"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
   const { searchParams } = new URL(request.url)
   const sessionId = searchParams.get("sessionId")
   const requestedCustomerId = searchParams.get("customerId")
@@ -37,3 +38,5 @@ export async function GET(request: Request) {
   if (!history) return NextResponse.json({ error: "History not found" }, { status: 404 })
   return NextResponse.json({ history })
 }
+
+export const GET = withErrorHandling("GET customer-history", GETHandler)

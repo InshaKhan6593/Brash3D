@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server"
+import { withErrorHandling } from "@/lib/api"
 import { CUSTOMER_COOKIE, verifyCustomerAccess } from "@/lib/auth"
 
 export const runtime = "nodejs"
 
-export async function GET(request: Request, context: RouteContext<"/access/session/[id]">) {
+async function GETHandler(request: Request, context: RouteContext<"/access/session/[id]">) {
   const { id } = await context.params
   const requestUrl = new URL(request.url)
   const token = requestUrl.searchParams.get("token")
@@ -25,3 +26,5 @@ export async function GET(request: Request, context: RouteContext<"/access/sessi
   })
   return response
 }
+
+export const GET = withErrorHandling("GET access/session", GETHandler)

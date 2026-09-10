@@ -66,7 +66,7 @@ try {
   paidBookingId = paidBooking.rows[0].id
   const paidSession = await pool.query(`
     INSERT INTO sesiones_compra (
-      reserva_id, vendedor_id, cliente_id, estado, total, checkout_session_65_id
+      reserva_id, vendedor_id, cliente_id, estado, total, checkout_session_inicial_id
     ) VALUES ($1::uuid, $2::uuid, $3::uuid, 'completada', 100.00, $4)
     RETURNING id::text
   `, [paidBookingId, slots.rows[0].seller_id, referredId, checkoutSessionId])

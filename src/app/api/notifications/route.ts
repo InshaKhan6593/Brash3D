@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server"
+import { invalidBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { query } from "@/lib/db"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
-export async function GET() {
+async function GETHandler() {
   const staff = await requireStaff(["admin", "seller"])
   if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
@@ -37,13 +38,18 @@ export async function GET() {
   })
 }
 
-export async function PATCH(request: Request) {
+async function PATCHHandler(request: Request) {
   if (!requestHasSameOrigin(request)) {
     return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
   }
   const staff = await requireStaff(["admin", "seller"])
   if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  const body = await request.json()
+  let body
+  try {
+    body = await request.json()
+  } catch {
+    return invalidBody()
+  }
   if (typeof body.id !== "string") {
     return NextResponse.json({ error: "Missing notification ID" }, { status: 400 })
   }
@@ -58,7 +64,7 @@ export async function PATCH(request: Request) {
   return NextResponse.json({ success: true })
 }
 
-export async function DELETE(request: Request) {
+async function DELETEHandler(request: Request) {
   if (!requestHasSameOrigin(request)) {
     return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
   }
@@ -88,3 +94,7 @@ export async function DELETE(request: Request) {
   `, [sellerId])
   return NextResponse.json({ success: true, cleared: result.rowCount || 0 })
 }
+
+export const GET = withErrorHandling("GET notifications", GETHandler)
+export const PATCH = withErrorHandling("PATCH notifications", PATCHHandler)
+export const DELETE = withErrorHandling("DELETE notifications", DELETEHandler)

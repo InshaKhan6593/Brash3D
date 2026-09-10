@@ -33,7 +33,20 @@
 
 Slots are generated in one-hour intervals from 9:00 AM through 6:00 PM for the client-specified Nike Sawgrass outlet. A duplicate request for an active hold or confirmed slot receives a conflict response.
 
+## Language
+
+Customer-facing screens (`/`, `/session/<id>`) and the Colombia local-team panel
+are in Spanish, matching the client's approved designs and the Colombian buyer
+audience. The USA seller/admin dashboard stays in English. `PurchaseHistoryTable`
+is shared by both and takes a `locale` prop rather than hard-coding its copy.
+
 ## Access Control
+
+Row Level Security from section 8 of the specification does not apply here. That
+section protects a Supabase anon key held by the browser; this application never
+exposes a database key to any client. Every query runs server-side behind the
+route handlers below, which authorize each request before touching PostgreSQL.
+
 
 - Staff authenticate through `/login`; database-backed sessions use random tokens stored only as SHA-256 hashes.
 - Staff cookies are HTTP-only, same-site, secure in production, and expire after eight hours.
@@ -45,14 +58,18 @@ Slots are generated in one-hour intervals from 9:00 AM through 6:00 PM for the c
 
 - Seller actions add, remove, and change product quantities through `/api/sessions`.
 - The customer and seller session views poll PostgreSQL-backed APIs for updates every 1.5 seconds.
-- Closing a session calculates subtotal, 7 percent tax, and a 15 percent Brash3D commission.
+- Closing a session calculates subtotal, tax, and the Brash3D commission using the rates stored on that session. `TAX_RATE_FL` and `FEE_RATE` set the rates for newly created sessions; an existing session keeps the rates it was priced with, so a rate change never reprices a quoted invoice.
+- A referrer earns at most `REFERRAL_REWARD_MONTHLY_CAP` complimentary bookings per calendar month.
 - Each customer receives a referral code. A referrer earns one 20 USD booking reward only after the referred customer's first 65 percent payment; the next eligible booking automatically consumes that reward.
 - Customer history exposes completed purchases to the customer through their secure session access and to the assigned seller through staff authorization.
-- The customer starts the Stripe 65 percent payment after invoicing; the Colombia team initiates the final 35 percent Stripe link at delivery or records cash/transfer.
+- The seller chooses the up-front percentage when closing the session. `sesiones_compra.porcentaje_inicial` stores it, and both charges are derived from it: the initial share is rounded to the cent and the balance is the remainder, so the two always sum to the invoice.
+- The customer starts the initial Stripe payment after invoicing; the Colombia team initiates the balance Stripe link at delivery or records cash/transfer. A customer who paid 100 percent up front has no balance, and the Colombia team confirms delivery without collecting.
 - The customer confirms a Colombia delivery address before the 65 percent Checkout opens.
 - The seller creates one labelled individual shipment after the 65 percent payment.
 - USA operations attaches prepared shipments to a consolidated box with one courier/tracking number.
 - Colombia confirms physical receipt from the digital manifest, then collects the final balance and confirms delivery.
+- Each consolidated box shows a settlement summary: total collected on delivery, the Stripe portion (US LLC revenue), and the cash/transfer portion that stays in Colombia as the local team's operating fund. This is accounting metadata only; the system never moves money between the two legal entities.
+- A booking whose customer requested a local Brash3D SAS invoice is flagged through the seller panel and the Colombia manifest, so the team knows which orders need one.
 
 ## UI
 

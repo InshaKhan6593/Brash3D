@@ -1,9 +1,11 @@
 import "server-only"
 
-import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { cookies } from "next/headers"
 import type { QueryResultRow } from "pg"
 import { query, transaction } from "@/lib/db"
+import { logger } from "@/lib/logger"
+import { matchesPassword } from "@/lib/password.mjs"
 
 export type StaffRole = "admin" | "seller" | "local_team"
 
@@ -37,30 +39,6 @@ const LOCK_MINUTES = 15
 
 function tokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex")
-}
-
-async function derivePassword(password: string, salt: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    scryptCallback(
-      password,
-      salt,
-      64,
-      { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 },
-      (error, derivedKey) => error ? reject(error) : resolve(derivedKey)
-    )
-  })
-}
-
-export async function hashPassword(password: string): Promise<{ hash: string; salt: string }> {
-  const salt = randomBytes(16).toString("base64url")
-  const derived = await derivePassword(password, salt)
-  return { hash: derived.toString("base64url"), salt }
-}
-
-async function matchesPassword(password: string, salt: string, expected: string): Promise<boolean> {
-  const actual = await derivePassword(password, salt)
-  const expectedBuffer = Buffer.from(expected, "base64url")
-  return actual.length === expectedBuffer.length && timingSafeEqual(actual, expectedBuffer)
 }
 
 function mapStaff(row: Pick<StaffRow, "id" | "name" | "email" | "role" | "seller_id" | "local_team_id">): StaffUser {
@@ -106,6 +84,11 @@ export async function authenticateStaff(
         WHERE id = $1::uuid
       `, [row.id, MAX_FAILED_ATTEMPTS, LOCK_MINUTES])
     }
+    logger.warn("Staff authentication failed", {
+      email: normalizedEmail,
+      reason: !row ? "unknown_account" : !row.active ? "inactive" : row.locked_until && row.locked_until > new Date() ? "locked" : "bad_password",
+      ip: metadata.ip,
+    })
     return null
   }
 

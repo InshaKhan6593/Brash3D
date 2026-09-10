@@ -5,6 +5,7 @@ import { CalendarDays } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { CustomerHeader } from "@/components/customer-header"
@@ -21,6 +22,7 @@ export default function Home() {
   const [slots, setSlots] = useState<TimeSlot[]>([])
   const [selectedDate, setSelectedDate] = useState("")
   const [selectedSlotId, setSelectedSlotId] = useState("")
+  const [requiresLocalInvoice, setRequiresLocalInvoice] = useState(false)
   const [loadingSlots, setLoadingSlots] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
@@ -29,11 +31,11 @@ export default function Home() {
     async function loadSlots() {
       try {
         const response = await fetch("/api/slots", { cache: "no-store" })
-        if (!response.ok) throw new Error("Unable to load available times")
+        if (!response.ok) throw new Error("No pudimos cargar los horarios disponibles")
         const data = (await response.json()) as { slots: TimeSlot[] }
         setSlots(data.slots)
       } catch (caughtError) {
-        setError(caughtError instanceof Error ? caughtError.message : "Unable to load available times")
+        setError(caughtError instanceof Error ? caughtError.message : "No pudimos cargar los horarios disponibles")
       } finally {
         setLoadingSlots(false)
       }
@@ -72,19 +74,20 @@ export default function Home() {
           telefono: form.get("telefono"),
           ciudad: form.get("ciudad"),
           referralCode: form.get("referralCode"),
+          requiresLocalInvoice,
           slotId: selectedSlotId,
         }),
       })
       const data = (await response.json()) as BookingResult & { error?: string }
-      if (!response.ok) throw new Error(data.error || "Unable to complete the booking")
+      if (!response.ok) throw new Error(data.error || "No pudimos completar la reserva")
       if (data.rewardApplied && data.session?.id) {
         router.push(`/session/${encodeURIComponent(data.session.id)}?booking=reward`)
         return
       }
-      if (!data.checkoutUrl) throw new Error("Unable to start secure checkout")
+      if (!data.checkoutUrl) throw new Error("No pudimos abrir el pago seguro")
       window.location.assign(data.checkoutUrl)
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : "Unable to complete the booking")
+      setError(caughtError instanceof Error ? caughtError.message : "No pudimos completar la reserva")
     } finally {
       setSubmitting(false)
     }
@@ -96,9 +99,9 @@ export default function Home() {
       <main className="px-4 py-4 sm:py-5">
       <div className="mx-auto max-w-5xl space-y-4">
         <header className="space-y-1 text-center">
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Book your live shopping session</h1>
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Reserva tu sesión de compra en vivo</h1>
           <p className="mx-auto max-w-2xl text-sm text-muted-foreground">
-            Choose a time at Nike Sawgrass, meet your personal shopper on WhatsApp, and watch your cart update live.
+            Elige un horario en Nike Sawgrass, conéctate con tu comprador personal por WhatsApp y mira tu carrito actualizarse en vivo.
           </p>
         </header>
 
@@ -106,16 +109,16 @@ export default function Home() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-xl">
-                <CalendarDays className="size-5" /> Choose date and time
+                <CalendarDays className="size-5" /> Elige fecha y hora
               </CardTitle>
-              <CardDescription>Pick a date, then select one available Nike Sawgrass time.</CardDescription>
+              <CardDescription>Selecciona una fecha y luego un horario disponible en Nike Sawgrass.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {loadingSlots && <p className="text-sm text-muted-foreground">Loading available times...</p>}
+              {loadingSlots && <p className="text-sm text-muted-foreground">Cargando horarios disponibles...</p>}
               {!loadingSlots && (
                 <>
                   <div className="space-y-2">
-                    <Label htmlFor="booking-date">Appointment date</Label>
+                    <Label htmlFor="booking-date">Fecha de la cita</Label>
                     <Input
                       id="booking-date"
                       type="date"
@@ -129,10 +132,10 @@ export default function Home() {
                       }}
                     />
                   </div>
-                  <section className="space-y-3">
+                  <section id="horarios" className="scroll-mt-20 space-y-3">
                     <div className="flex items-center justify-between gap-3">
-                      <h2 className="font-semibold">{new Date(`${activeDate}T12:00:00`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</h2>
-                      <span className="text-xs text-muted-foreground">{availableCount} available</span>
+                      <h2 className="text-sm font-medium text-muted-foreground first-letter:uppercase">{new Date(`${activeDate}T12:00:00`).toLocaleDateString("es-CO", { weekday: "long" })}</h2>
+                      <span className="text-xs text-muted-foreground">{availableCount} horario{availableCount === 1 ? "" : "s"} disponible{availableCount === 1 ? "" : "s"}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                     {activeSlots.map((slot) => (
@@ -145,7 +148,7 @@ export default function Home() {
                         className="h-12 flex-col justify-center gap-0 px-2 leading-tight"
                       >
                         <span>{slot.time}</span>
-                        <span className="text-[10px] font-normal opacity-70">{slot.available ? "Available" : "Booked"}</span>
+                        {!slot.available && <span className="text-[10px] font-normal opacity-70">Reservado</span>}
                       </Button>
                     ))}
                     </div>
@@ -157,45 +160,70 @@ export default function Home() {
 
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-xl">Your details</CardTitle>
-              <CardDescription>The reservation fee is $20 USD.</CardDescription>
+              <CardTitle className="text-xl">Tus datos</CardTitle>
+              <CardDescription>La reserva tiene un costo fijo de 20 USD.</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-1">
               {selectedSlot && (
                 <div className="rounded-md bg-muted p-3 text-sm sm:col-span-2 lg:col-span-1">
-                  <p className="font-semibold">Selected appointment</p>
+                  <p className="font-semibold">Cita seleccionada</p>
                   <p className="text-muted-foreground">
-                    {new Date(`${selectedSlot.date}T12:00:00`).toLocaleDateString("en-US", { month: "long", day: "numeric" })}, {selectedSlot.time} · {selectedSlot.outlet}
+                    {new Date(`${selectedSlot.date}T12:00:00`).toLocaleDateString("es-CO", { month: "long", day: "numeric" })}, {selectedSlot.time} · {selectedSlot.outlet}
                   </p>
                 </div>
               )}
               <div className="space-y-2">
-                <Label htmlFor="nombre">Full name</Label>
-                <Input id="nombre" name="nombre" required placeholder="Camila Rodriguez" className="h-9" />
+                <Label htmlFor="nombre">Nombre completo</Label>
+                <Input id="nombre" name="nombre" required placeholder="Camila Rodríguez" className="h-9" />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
-                <Input id="email" name="email" type="email" required placeholder="camila@example.com" className="h-9" />
+                <Label htmlFor="email">Correo electrónico</Label>
+                <Input id="email" name="email" type="email" required placeholder="camila@ejemplo.com" className="h-9" />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="telefono">WhatsApp number</Label>
+                <Label htmlFor="telefono">Número de WhatsApp</Label>
                 <Input id="telefono" name="telefono" required placeholder="+57 300 123 4567" className="h-9" />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="ciudad">City</Label>
-                <Input id="ciudad" name="ciudad" required placeholder="Bogota" className="h-9" />
+                <Label htmlFor="ciudad">Ciudad</Label>
+                <Input id="ciudad" name="ciudad" required placeholder="Bogotá" className="h-9" />
               </div>
               <div className="space-y-2 sm:col-span-2 lg:col-span-1">
-                <Label htmlFor="referralCode">Referral code <span className="text-muted-foreground">(optional)</span></Label>
+                <Label htmlFor="referralCode">Código de referido <span className="text-muted-foreground">(opcional)</span></Label>
                 <Input id="referralCode" name="referralCode" maxLength={32} placeholder="BR3D-ABC123" className="h-9 uppercase" />
-                <p className="text-xs text-muted-foreground">A valid reward covers this booking’s $20 fee.</p>
+                <p className="text-xs text-muted-foreground">Una recompensa válida cubre los 20 USD de esta reserva.</p>
+              </div>
+              <div className="flex items-start gap-2.5 rounded-md border p-3 sm:col-span-2 lg:col-span-1">
+                <Checkbox
+                  id="requiresLocalInvoice"
+                  checked={requiresLocalInvoice}
+                  onCheckedChange={(checked) => setRequiresLocalInvoice(checked === true)}
+                  className="mt-0.5"
+                />
+                <div className="space-y-1">
+                  <Label htmlFor="requiresLocalInvoice" className="font-normal leading-snug">
+                    Necesito factura local de Brash3D SAS (Colombia)
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Marca esta casilla solo si necesitas deducir la compra en Colombia. El equipo la emite manualmente.
+                  </p>
+                </div>
               </div>
               {error && <p className="text-sm text-destructive sm:col-span-2 lg:col-span-1">{error}</p>}
+              {!selectedSlotId && (
+                <button
+                  type="button"
+                  onClick={() => document.getElementById("horarios")?.scrollIntoView({ behavior: "smooth", block: "center" })}
+                  className="w-full rounded-md border border-dashed px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted sm:col-span-2 lg:col-span-1"
+                >
+                  Primero elige un horario disponible arriba. <span className="font-medium underline">Ver horarios</span>
+                </button>
+              )}
               <Button className="w-full sm:col-span-2 lg:col-span-1" size="lg" disabled={!selectedSlotId || submitting}>
-                {submitting ? "Opening secure checkout..." : "Pay $20 and reserve slot"}
+                {submitting ? "Abriendo pago seguro..." : "Pagar 20 USD y reservar"}
               </Button>
               <p className="text-center text-xs text-muted-foreground sm:col-span-2 lg:col-span-1">
-                Stripe securely processes your payment. The slot is held for 15 minutes.
+                Stripe procesa tu pago de forma segura. El horario queda apartado 15 minutos.
               </p>
             </CardContent>
           </Card>

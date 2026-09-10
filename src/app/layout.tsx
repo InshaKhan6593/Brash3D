@@ -14,14 +14,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Brash3D Live Shopping",
-  description: "Book and follow a live outlet shopping session with Brash3D.",
+  title: "Brash3D · Compras en vivo",
+  description: "Reserva y sigue tu sesión de compra en vivo desde el outlet con Brash3D.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
-      lang="en"
+      lang="es"
       suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >

@@ -29,3 +29,19 @@ export function formatDateTime(date: Date | string): string {
     minute: "2-digit",
   })
 }
+
+// Customer-facing screens and the Colombia local-team panel are shown in
+// Spanish; the USA seller/admin dashboard stays in English.
+export function formatDateTimeEs(date: Date | string): string {
+  return new Date(date).toLocaleString("es-CO", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
+export function formatPercent(rate: number): string {
+  return `${new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 }).format(rate * 100)}%`
+}

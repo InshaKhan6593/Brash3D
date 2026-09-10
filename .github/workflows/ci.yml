@@ -11,6 +11,27 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
+    # The invoice and payment-split logic is SQL. Mocking it would only test the
+    # mock, so the store tests run against a real PostgreSQL.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: brash3d
+        ports:
+          - 5440:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d brash3d"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5440/brash3d
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,5 +40,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run db:migrate
+      - run: npm test
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high

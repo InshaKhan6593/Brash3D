@@ -144,16 +144,16 @@ try {
   const close = await jsonRequest("/api/sessions", {
     method: "POST",
     headers: { "content-type": "application/json", origin: baseUrl, cookie: staffCookie },
-    body: JSON.stringify({ action: "close", sessionId }),
+    body: JSON.stringify({ action: "close", sessionId, initialPercentage: 65 }),
   })
   assert.equal(close.response.status, 200)
 
   // Stripe is outside this smoke test. Seed the verified 65% outcome so the
   // documented shipping and consolidated-manifest lifecycle can be exercised.
   await pool.query(`
-    UPDATE sesiones_compra SET monto_pagado_65=round(total*0.65,2),
+    UPDATE sesiones_compra SET monto_pagado_inicial=round(total*0.65,2),
       direccion_entrega='Carrera 7 # 72-41, Apt 4', ciudad_entrega='Bogota',
-      direccion_confirmada_at=now(), payment_intent_65_id=$2
+      direccion_confirmada_at=now(), payment_intent_inicial_id=$2
     WHERE id::text=$1
   `, [sessionId, `pi_65_smoke_${stamp}`])
   const shipment = await jsonRequest("/api/sessions", {
@@ -221,11 +221,11 @@ try {
   const persisted = await jsonRequest(`/api/sessions?id=${encodeURIComponent(sessionId)}`, {
     headers: { cookie: staffCookie },
   })
-  assert.equal(persisted.body.session.montoPagado65, 158.6)
-  assert.equal(persisted.body.session.montoPagado35, 85.4)
+  assert.equal(persisted.body.session.montoPagadoInicial, 158.6)
+  assert.equal(persisted.body.session.montoPagadoFinal, 85.4)
   assert.equal(persisted.body.session.envio.estado, "entregado")
   const customerCompleted = await jsonRequest(`/api/sessions?id=${encodeURIComponent(sessionId)}`, { headers: { cookie: customerCookie } })
-  assert.equal(customerCompleted.body.session.montoPagado35, 85.4)
+  assert.equal(customerCompleted.body.session.montoPagadoFinal, 85.4)
   assert.equal(customerCompleted.body.session.envio.estado, "entregado")
   const logout = await jsonRequest("/api/auth/logout", {
     method: "POST",

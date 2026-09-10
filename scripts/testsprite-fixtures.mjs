@@ -176,15 +176,15 @@ async function seed() {
       await client.query(`
         INSERT INTO sesiones_compra (
           id, reserva_id, vendedor_id, cliente_id, fecha_inicio, fecha_fin, started_at, estado,
-          subtotal, impuesto, comision, total, payment_intent_65_id, payment_intent_35_id,
-          monto_pagado_65, monto_pagado_35, direccion_entrega, ciudad_entrega, direccion_confirmada_at
+          subtotal, impuesto, comision, total, payment_intent_inicial_id, payment_intent_final_id,
+          monto_pagado_inicial, monto_pagado_final, direccion_entrega, ciudad_entrega, direccion_confirmada_at
         ) VALUES ($1, $2, $3, $4, now() - ($5 || ' hours')::interval, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
         ON CONFLICT (id) DO UPDATE SET reserva_id = EXCLUDED.reserva_id, vendedor_id = EXCLUDED.vendedor_id,
           cliente_id = EXCLUDED.cliente_id, fecha_inicio = EXCLUDED.fecha_inicio, fecha_fin = EXCLUDED.fecha_fin,
           started_at = EXCLUDED.started_at, estado = EXCLUDED.estado, subtotal = EXCLUDED.subtotal,
           impuesto = EXCLUDED.impuesto, comision = EXCLUDED.comision, total = EXCLUDED.total,
-          payment_intent_65_id = EXCLUDED.payment_intent_65_id, payment_intent_35_id = EXCLUDED.payment_intent_35_id,
-          monto_pagado_65 = EXCLUDED.monto_pagado_65, monto_pagado_35 = EXCLUDED.monto_pagado_35,
+          payment_intent_inicial_id = EXCLUDED.payment_intent_inicial_id, payment_intent_final_id = EXCLUDED.payment_intent_final_id,
+          monto_pagado_inicial = EXCLUDED.monto_pagado_inicial, monto_pagado_final = EXCLUDED.monto_pagado_final,
           direccion_entrega = EXCLUDED.direccion_entrega, ciudad_entrega = EXCLUDED.ciudad_entrega,
           direccion_confirmada_at = EXCLUDED.direccion_confirmada_at
       `, [
