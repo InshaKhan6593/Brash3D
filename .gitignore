@@ -52,3 +52,8 @@ testsprite_tests/*.py
 testsprite_tests/*.html
 testsprite_tests/standard_prd.json
 testsprite_tests/testsprite_frontend_test_plan.json
+
+# Local credential notes. The repository is public: plaintext passwords must
+# never reach a commit, where history keeps them even after a later deletion.
+/TEST_CREDENTIALS.md
+*.credentials.md
