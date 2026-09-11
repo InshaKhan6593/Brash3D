@@ -10,6 +10,7 @@ designs and the 14-section technical specification).
 - Availability from today through the end of next month, one Nike Sawgrass schedule, 10 hourly slots per day from 9:00 AM to 6:00 PM.
 - Unavailable slots remain visible, disabled, and labelled as booked.
 - Transactional slot locking, duplicate-booking protection, and atomic 15-minute pending-payment holds with automatic release.
+- Admin-managed opening hours. A weekly template per seller sets which days are open and between which hours, and dated exceptions close or re-time a single day for a holiday or an outlet closure. Slot generation reads both instead of the hard-coded `generate_series(9, 18)` that produced ten slots every day of the week with no way to close a Sunday. Migration 016 seeds the previous behaviour exactly — all seven days, 09:00 to 19:00 — so deploying it changes no customer-visible availability; closing a day is then a decision made in the panel. Reconciliation runs in both directions: slots left over from a previous schedule are removed, except where a reserva already points at one, because that appointment belongs to a customer. Those surface in the panel as a warning listing each stranded booking rather than being silently dropped.
 - Seller-side booking creation on behalf of a customer.
 
 ### Live session
@@ -44,6 +45,11 @@ designs and the 14-section technical specification).
 - Stripe webhook outcomes, refunds of late payments, and failed staff logins are all logged.
 - Scrypt parameters defined once in `src/lib/password.mjs`, shared by the application and `scripts/create-staff.mjs`, with a test proving a script-created account can log in.
 - `Strict-Transport-Security` alongside the existing nosniff, frame, referrer and permissions headers.
+- Request bodies read through one helper (`readJsonBody`). Each route previously wrapped `await request.json()` in its own try/catch, which catches a parse failure but not a body that parses to something other than an object: `null`, `true`, `123` and `"str"` all reached handler code and threw on the first property access. Three routes answered 500 to a one-byte body, among them the public booking endpoint and the customer payment endpoint. Narrowing the parsed body from `any` to `unknown` also surfaced several fields that had been passed into typed parameters with no validation at all.
+- Slot listing runs as one database round trip instead of three. Server-side each statement takes under 4 ms, but every statement costs a full network round trip to a managed database — about 160 ms to the Tokyo region — so the public booking page spent most of a second waiting on the network. Generating missing slots, releasing expired holds and reading the list now travel together over the simple query protocol, and the expired-hold release is a single CTE rather than a read followed by a dependent write. Measured on the booking page: 727-1018 ms before, 184 ms after.
+- Row level security enabled on all 19 public tables (`015_enable_row_level_security.sql`), with the privileges Supabase grants `anon` and `authenticated` by default revoked. Supabase serves PostgREST over the `public` schema to anyone holding the publishable key, which is public by design, and that endpoint is live whether or not the application uses supabase-js — this one does not. Verified: before the migration every table answered reads and deletes over that endpoint, `staff_users.password_hash` included; after it, every one answers 401. The application is unaffected because it connects as the table owner, which bypasses RLS.
+- Database TLS decided once in `src/lib/db-ssl.mjs` and shared by the application pool and the migration runner, the way `password.mjs` is shared with `create-staff.mjs`. A local host connects in the clear; every other host verifies against the system CA store, which is what a managed provider such as Supabase requires. `DATABASE_SSL` and `DATABASE_SSL_CA` override it.
+- Scheduled maintenance (specification section 14): expired booking holds are released on a timer rather than only when somebody reads the slot list, and the three tables that otherwise only grow — `stripe_webhook_events`, `customer_session_access` and `request_rate_limits` — are pruned. Webhook-event retention deliberately outlasts Stripe's three-day retry window, since that ledger is what stops a retry being charged twice. A long-running host runs it in-process from `src/instrumentation.ts`; a serverless host, where timers never fire between requests, drives the same work through `POST /api/maintenance`, which stays closed unless `MAINTENANCE_SECRET` is set.
 
 ### Interface review
 A screen-by-screen pass over every page at desktop and 375 px, covering all five
@@ -114,29 +120,27 @@ before many sessions run concurrently.
 `/api/local-team` invokes that pair on every 5-second poll. Fine at current data
 volumes, worth scoping to the relevant sessions as history grows.
 
-### 6. Expired holds are released lazily
-Specification section 14 asks for a scheduled job. Instead, expired holds are
-released whenever slots are read or a booking is attempted, which is
-self-healing in practice but leaves a slot locked until somebody looks at it.
-Nothing prunes `stripe_webhook_events` or expired `customer_session_access`
-rows either.
+### 6. Supabase Auth and Realtime
+The database is now hosted on Supabase, and row level security is enabled and
+verified (see Production hardening) — the deny-by-default floor is in place.
 
-### 7. Supabase Auth, RLS, and Realtime
-The database can now be hosted on Supabase (the migration runner handles the
-pre-created `supabase_realtime` publication). Not yet built: Supabase Auth magic
-links for customers, the section 8 RLS policies, and read-only Realtime
-subscriptions replacing the polling in item 5. These ship together — once an
-anon key reaches a browser, RLS is the only thing protecting customer data.
-Writes stay server-side regardless. Requires client sign-off on customers
-receiving a Supabase authentication email.
+Not yet built: Supabase Auth magic links for customers, per-customer RLS read
+policies, and read-only Realtime subscriptions replacing the polling in item 4.
+These three ship together and only become necessary together. Today no anon key
+has a path to the data, so the deny-everything floor is the correct posture;
+giving the browser a Realtime subscription is what would require the policies,
+and those in turn require an authenticated customer identity for `auth.uid()` to
+resolve — which specification section 8 assumes but never creates. Writes stay
+server-side regardless. Requires client sign-off on customers receiving a
+Supabase authentication email.
 
-### 8. Deployment configuration
+### 7. Deployment configuration
 A managed database, a public HTTPS webhook endpoint, production staff accounts,
 and an error-tracking destination for the JSON logs must be configured at
 deployment. Stripe stays in test mode until the client is ready to go live.
 See the production checklist in `README.md`.
 
-### 9. Error tracking destination
+### 8. Error tracking destination
 Structured logs are emitted but nothing aggregates or alerts on them yet.
 Whatever the host provides (Vercel log drains, CloudWatch) or a tracker such as
 Sentry can consume them without code changes; only the destination is missing.

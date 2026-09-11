@@ -14,7 +14,8 @@ interface UseSessionReturn {
   reopenForCorrection: () => Promise<void>
   start: () => Promise<void>
   updateDeliveryStatus: (status: EnvioEstado) => Promise<void>
-  pay: (delivery: { address: string; city: string }) => Promise<boolean>
+  /** Resolves to null when the checkout opened, or the reason it did not. */
+  pay: (delivery: { address: string; city: string }) => Promise<string | null>
   refresh: () => Promise<void>
 }
 
@@ -118,20 +119,29 @@ export function useSession(sessionId: string | null, accessToken?: string | null
     await mutate("updateDeliveryStatus", { status })
   }, [mutate])
 
-  const pay = useCallback(async (delivery: { address: string; city: string }): Promise<boolean> => {
+  /**
+   * Returns null on success (the browser is already navigating to Stripe), or
+   * the reason it failed. It used to return a bare boolean, which left the page
+   * blaming the delivery address for every failure — including a Stripe outage
+   * or an invoice that was not ready, where the address was perfectly fine and
+   * re-typing it could never help.
+   */
+  const pay = useCallback(async (delivery: { address: string; city: string }): Promise<string | null> => {
+    if (!sessionId) return "No pudimos identificar tu sesión."
     try {
-      if (!sessionId) return false
       const response = await fetch("/api/payments/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, stage: "inicial", ...delivery }),
       })
-      const result = await response.json() as { checkoutUrl?: string }
-      if (!response.ok || !result.checkoutUrl) return false
+      const result = await response.json() as { checkoutUrl?: string; error?: string }
+      if (!response.ok || !result.checkoutUrl) {
+        return result.error || "No pudimos iniciar el pago. Inténtalo de nuevo."
+      }
       window.location.assign(result.checkoutUrl)
-      return true
+      return null
     } catch {
-      return false
+      return "No pudimos conectar con el sistema de pagos. Revisa tu conexión e inténtalo de nuevo."
     }
   }, [sessionId])
 

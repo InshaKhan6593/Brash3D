@@ -125,6 +125,47 @@ call sites.
 - Terminate TLS in front of the app: the auth cookies are `secure` in production and `Strict-Transport-Security` is sent on every response.
 - Add Meta WhatsApp and courier credentials only after the client selects those providers.
 
+## Deploying to Railway
+
+Railway runs the app as a persistent container and Supabase keeps hosting the
+database, so only one service is deployed here. Because the container is
+long-lived, the in-process maintenance timer works and no platform cron is
+needed: leave `MAINTENANCE_INTERVAL_MINUTES` at its default and leave
+`MAINTENANCE_SECRET` unset.
+
+[`railway.json`](railway.json) pins the build and start commands, runs
+`npm run db:migrate` as the pre-deploy step, and points the healthcheck at
+`/api/health`. That route returns 503 when the database is unreachable, so a
+bad `DATABASE_URL` fails the deploy instead of serving a broken site.
+
+1. Create a Railway project from this GitHub repository.
+2. Set the service variables:
+
+   | Variable | Value |
+   | --- | --- |
+   | `DATABASE_URL` | The Supabase **session pooler** string (`...pooler.supabase.com:5432`). The direct `db.<ref>.supabase.co` host is IPv6-only and is not reachable from Railway. |
+   | `DATABASE_SSL_CA_FILE` | `certs/supabase-root-2021.crt` |
+   | `DATABASE_POOL_MAX` | `10` |
+   | `STRIPE_MODE` | `test` until the client signs off, then `live` |
+   | `STRIPE_SECRET_KEY` | The key matching `STRIPE_MODE` |
+   | `STRIPE_WEBHOOK_SECRET` | Filled in at step 4 |
+
+   Do not set `DATABASE_SSL`. Supabase signs its certificates with a private
+   root, so the CA pin above is what makes the connection verify; an override
+   would either break the connection or silently drop server authentication.
+3. Deploy, then generate a public domain for the service.
+4. Register `https://<domain>/api/stripe/webhook` in the Stripe dashboard and
+   put that endpoint's signing secret in `STRIPE_WEBHOOK_SECRET`.
+5. Create staff accounts against the production database with
+   `npm run auth:create-staff`. Do not reuse local credentials.
+
+Do not enable Railway's app sleeping. A sleeping service adds a cold start to
+the Stripe webhook, which is the one request that must not be dropped.
+
+On the Supabase free plan a project is paused after a week of inactivity, which
+takes the site down until someone resumes it by hand. Move the client to
+Supabase Pro before the app carries real payments.
+
 ## Documentation
 
 - [Implementation status](docs/IMPLEMENTATION_STATUS.md)

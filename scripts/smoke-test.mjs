@@ -4,12 +4,13 @@ import process from "node:process"
 import { promisify } from "node:util"
 import nextEnv from "@next/env"
 import pg from "pg"
+import { sslConfig } from "../src/lib/db-ssl.mjs"
 
 const { loadEnvConfig } = nextEnv
 loadEnvConfig(process.cwd())
 
 const baseUrl = process.env.SMOKE_BASE_URL || "http://localhost:3000"
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: sslConfig() })
 const scrypt = promisify(scryptCallback)
 const stamp = Date.now()
 const email = `smoke-${stamp}@example.com`

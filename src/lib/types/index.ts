@@ -176,3 +176,27 @@ export interface CustomerPurchaseHistory {
   availableReferralCredit: number
   purchases: PurchaseHistoryItem[]
 }
+
+/** One weekday in the recurring opening-hours template. 0 = Sunday. */
+export interface WeekdaySchedule {
+  diaSemana: number
+  abierto: boolean
+  horaApertura: string
+  horaCierre: string
+}
+
+/** A single date that overrides the weekly template — a holiday or a closure. */
+export interface ScheduleException {
+  id: string
+  fecha: string
+  abierto: boolean
+  horaApertura: string | null
+  horaCierre: string | null
+  motivo: string | null
+}
+
+export interface SellerSchedule {
+  vendedorId: string
+  semana: WeekdaySchedule[]
+  excepciones: ScheduleException[]
+}

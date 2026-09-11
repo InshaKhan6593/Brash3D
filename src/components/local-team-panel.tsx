@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { Banknote, CheckCircle2, Clipboard, CreditCard, FileText, Landmark, LogOut, MoreHorizontal, PackageCheck, Phone, Wallet } from "lucide-react"
-import { useRouter } from "next/navigation"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -256,7 +255,6 @@ function DeliveryDetailsSheet({ session, boxNumber, onOpenChange, onStripe, onOf
 }
 
 export function LocalTeamPanel() {
-  const router = useRouter()
   const [deliveries, setDeliveries] = useState<SesionCompra[]>([])
   const [incomingBoxes, setIncomingBoxes] = useState<ConsolidatedBoxManifest[]>([])
   const [receivedBoxes, setReceivedBoxes] = useState<ConsolidatedBoxManifest[]>([])
@@ -312,7 +310,10 @@ export function LocalTeamPanel() {
     setMessage("Link de pago seguro copiado. Envíalo al cliente por WhatsApp.")
   }
 
-  async function logout() { await fetch("/api/auth/logout", { method: "POST" }); router.replace("/login"); router.refresh() }
+  // Full document load: a soft navigation would keep this panel's fetched data
+  // in memory and can reuse the router's stale entry for /login.
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a soft navigation is exactly what breaks here.
+  async function logout() { await fetch("/api/auth/logout", { method: "POST" }); window.location.assign("/login") }
 
   const visibleDeliveries = filter === "all" ? deliveries : deliveries.filter((session) => deliveryFilterFor(session) === filter)
   const counts = deliveryFilters.reduce<Record<DeliveryFilter, number>>((result, item) => { result[item.value] = item.value === "all" ? deliveries.length : deliveries.filter((session) => deliveryFilterFor(session) === item.value).length; return result }, { all: 0, awaiting_payment: 0, ready_for_handover: 0, delivered: 0 })

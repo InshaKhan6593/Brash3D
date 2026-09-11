@@ -214,34 +214,130 @@ function formatPercentage(value: number): string {
   return `${Number(value.toFixed(2))}%`
 }
 
-async function ensureAvailability(): Promise<void> {
-  await query(`
-    INSERT INTO disponibilidad (vendedor_id, fecha, hora_inicio, hora_fin, disponible)
-    SELECT v.id, day::date, make_time(hour, 0, 0), make_time(hour + 1, 0, 0), TRUE
-    FROM vendedores v
-    CROSS JOIN generate_series(
-      current_date,
-      (date_trunc('month', current_date) + interval '2 months - 1 day')::date,
-      interval '1 day'
-    ) day
-    CROSS JOIN generate_series(9, 18) hour
-    WHERE v.activo = true
-    ON CONFLICT (vendedor_id, fecha, hora_inicio) DO NOTHING
+/**
+ * The window availability is generated for: today through the end of the month
+ * after next, matching what the hard-coded generator produced.
+ */
+const HORIZON = `(date_trunc('month', current_date) + interval '2 months - 1 day')::date`
+
+/**
+ * Every open hour each active seller should have, derived from the weekly
+ * template and any date exception. One row per seller/date/hour.
+ *
+ * An exception wins over the template for its date: `abierto = false` closes it,
+ * and `abierto = true` reopens it with its own hours, falling back to the
+ * template's when those are null.
+ */
+const SCHEDULED_HOURS = `
+  SELECT
+    v.id AS vendedor_id,
+    day::date AS fecha,
+    hour
+  FROM vendedores v
+  CROSS JOIN generate_series(current_date, ${HORIZON}, interval '1 day') day
+  JOIN horarios_plantilla t
+    ON t.vendedor_id = v.id AND t.dia_semana = EXTRACT(DOW FROM day)
+  LEFT JOIN excepciones_calendario e
+    ON e.vendedor_id = v.id AND e.fecha = day::date
+  CROSS JOIN LATERAL generate_series(
+    EXTRACT(HOUR FROM COALESCE(e.hora_apertura, t.hora_apertura))::int,
+    EXTRACT(HOUR FROM COALESCE(e.hora_cierre, t.hora_cierre))::int - 1
+  ) hour
+  WHERE v.activo = true
+    AND COALESCE(e.abierto, t.abierto) = true
+`
+
+/**
+ * Brings `disponibilidad` in line with the admin's schedule, in both directions.
+ *
+ * Inserting the missing hours is only half the job: when an admin closes Sunday
+ * or adds a holiday, the slots generated under the previous schedule are already
+ * in the table and would keep appearing on the booking page. The delete removes
+ * those, but only where no reserva points at them — a slot someone has already
+ * booked or is holding stays, because the customer's appointment is real
+ * regardless of what the schedule was changed to afterwards. Those show up for
+ * the admin as bookings on a day now marked closed, which is the honest state
+ * and something to resolve with the customer rather than silently drop.
+ */
+/**
+ * Removes slots the schedule no longer covers — a day the admin closed, or hours
+ * trimmed off one. A slot a reserva points at is kept: that appointment belongs
+ * to a customer and needs a human decision, not a silent deletion. The seller
+ * panel lists those as stranded bookings.
+ *
+ * Deliberately not part of `ensureAvailability`. That runs on every read of the
+ * slot list, and against a managed database each statement costs a full network
+ * round trip — about 160 ms from here to the Tokyo region — so folding this in
+ * made the public booking page measurably slower for something that can only
+ * change when an admin edits the schedule. It runs there instead, and on the
+ * maintenance timer as a backstop.
+ */
+export async function pruneUnscheduledSlots(): Promise<number> {
+  const result = await query(`
+    DELETE FROM disponibilidad d
+    WHERE d.fecha >= current_date
+      AND NOT EXISTS (SELECT 1 FROM reservas r WHERE r.disponibilidad_id = d.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM (${SCHEDULED_HOURS}) s
+        WHERE s.vendedor_id = d.vendedor_id
+          AND s.fecha = d.fecha
+          AND make_time(s.hour, 0, 0) = d.hora_inicio
+      )
   `)
+  return result.rowCount ?? 0
 }
 
+interface SlotRow extends QueryResultRow {
+  id: string
+  date: string
+  start_time: string
+  available: boolean
+  seller_id: string
+  seller_name: string
+  outlet: string | null
+}
+
+/**
+ * Generate any missing slots, free any expired holds, then read the list — in a
+ * single round trip.
+ *
+ * This is the public booking page's hot path, and it used to issue three
+ * separate statements. Server-side each takes under 4 ms, but every one costs a
+ * full network round trip to the managed database (~160 ms to the Tokyo
+ * region), so the page spent most of a second waiting on the network rather
+ * than on work.
+ *
+ * Semicolon-separated statements go over the simple query protocol: PostgreSQL
+ * runs them in order inside one implicit transaction, and — unlike branches of a
+ * CTE — each one sees the previous one's effects. The SELECT therefore returns
+ * the rows the INSERT just created. The price is that the simple protocol takes
+ * no bind parameters, which is only workable here because none of the three
+ * needs one; anything interpolated into this string would be an injection, so
+ * keep it literal.
+ */
 export async function getTimeSlots(): Promise<TimeSlot[]> {
-  await ensureAvailability()
-  await releaseExpiredBookingHolds()
-  const result = await query<{
-    id: string
-    date: string
-    start_time: string
-    available: boolean
-    seller_id: string
-    seller_name: string
-    outlet: string | null
-  }>(`
+  const batch = await query<SlotRow>(`
+    INSERT INTO disponibilidad (vendedor_id, fecha, hora_inicio, hora_fin, disponible)
+    SELECT s.vendedor_id, s.fecha, make_time(s.hour, 0, 0), make_time(s.hour + 1, 0, 0), TRUE
+    FROM (${SCHEDULED_HOURS}) s
+    ON CONFLICT (vendedor_id, fecha, hora_inicio) DO NOTHING;
+
+    WITH expired AS (
+      UPDATE reservas
+      SET estado = 'cancelada', cancellation_reason = 'hold_expired'
+      WHERE estado = 'pendiente_pago' AND hold_expires_at <= now()
+      RETURNING disponibilidad_id
+    )
+    UPDATE disponibilidad d
+    SET disponible = true
+    WHERE d.id IN (SELECT disponibilidad_id FROM expired)
+      AND NOT EXISTS (
+        SELECT 1 FROM reservas r
+        WHERE r.disponibilidad_id = d.id
+          AND (r.estado IN ('confirmada', 'completada')
+            OR (r.estado = 'pendiente_pago' AND r.hold_expires_at > now()))
+      );
+
     SELECT d.id::text, d.fecha::text AS date, to_char(d.hora_inicio, 'HH24:MI') AS start_time,
       d.disponible AS available, v.id::text AS seller_id, v.nombre AS seller_name,
       v.tienda_asignada AS outlet
@@ -251,6 +347,11 @@ export async function getTimeSlots(): Promise<TimeSlot[]> {
       AND (date_trunc('month', current_date) + interval '2 months - 1 day')::date
     ORDER BY d.fecha, d.hora_inicio, v.nombre
   `)
+
+  // A multi-statement query resolves to one result per statement; the slots are
+  // the last. `pg` types this as a single QueryResult, hence the cast.
+  const results = batch as unknown as QueryResult<SlotRow>[]
+  const result = Array.isArray(results) ? results[results.length - 1] : batch
 
   return result.rows.map((row) => ({
     id: row.id,
@@ -412,35 +513,43 @@ function bookingHoldMinutes(): number {
   return Number.isInteger(configured) && configured >= 5 && configured <= 30 ? configured : 15
 }
 
-async function releaseExpiredBookingHolds(
+export async function releaseExpiredBookingHolds(
   client?: PoolClient,
   slotId?: string
 ): Promise<number> {
   const executor = client ? clientQuery(client) : query
-  const expired = await executor<{ disponibilidad_id: string }>(`
-    UPDATE reservas
-    SET estado = 'cancelada', cancellation_reason = 'hold_expired'
-    WHERE estado = 'pendiente_pago'
-      AND hold_expires_at <= now()
-      AND ($1::text IS NULL OR disponibilidad_id::text = $1)
-    RETURNING disponibilidad_id::text
-  `, [slotId || null])
-
-  if (expired.rows.length) {
-    const ids = [...new Set(expired.rows.map((row) => row.disponibilidad_id))]
-    await executor(`
+  // One statement rather than two. The second update used to be issued only
+  // after the first returned its rows, which cost an extra network round trip -
+  // about 160 ms against a managed database - every time the slot list was read.
+  // The freeing update reads the cancelled ids straight out of the CTE instead.
+  //
+  // The NOT EXISTS deliberately does not need to see the cancellation the CTE
+  // just made: a hold that expired has hold_expires_at <= now(), so it already
+  // fails the `> now()` test whether the snapshot shows it cancelled or not.
+  const released = await executor<{ released: number }>(`
+    WITH expired AS (
+      UPDATE reservas
+      SET estado = 'cancelada', cancellation_reason = 'hold_expired'
+      WHERE estado = 'pendiente_pago'
+        AND hold_expires_at <= now()
+        AND ($1::text IS NULL OR disponibilidad_id::text = $1)
+      RETURNING disponibilidad_id
+    ), freed AS (
       UPDATE disponibilidad d
       SET disponible = true
-      WHERE d.id = ANY($1::uuid[])
+      WHERE d.id IN (SELECT disponibilidad_id FROM expired)
         AND NOT EXISTS (
           SELECT 1 FROM reservas r
           WHERE r.disponibilidad_id = d.id
             AND (r.estado IN ('confirmada', 'completada')
               OR (r.estado = 'pendiente_pago' AND r.hold_expires_at > now()))
         )
-    `, [ids])
-  }
-  return expired.rows.length
+      RETURNING d.id
+    )
+    SELECT (SELECT count(*) FROM expired)::int AS released
+  `, [slotId || null])
+
+  return released.rows[0]?.released ?? 0
 }
 
 export async function attachBookingCheckout(

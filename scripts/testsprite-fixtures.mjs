@@ -1,10 +1,11 @@
 import nextEnv from "@next/env"
 import pg from "pg"
+import { sslConfig } from "../src/lib/db-ssl.mjs"
 import { createHash } from "node:crypto"
 
 nextEnv.loadEnvConfig(process.cwd())
 
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: sslConfig() })
 const sellerId = "10000000-0000-4000-8000-000000000001"
 const localTeamId = "20000000-0000-4000-8000-000000000001"
 

@@ -1,6 +1,7 @@
 import "server-only"
 
 import { Pool, type PoolClient, type QueryResultRow } from "pg"
+import { sslConfig } from "@/lib/db-ssl.mjs"
 
 const globalDatabase = globalThis as typeof globalThis & {
   __brash3dPool?: Pool
@@ -23,6 +24,7 @@ export const db =
   globalDatabase.__brash3dPool ??
   new Pool({
     connectionString: connectionString(),
+    ssl: sslConfig(connectionString()),
     max: Number(process.env.DATABASE_POOL_MAX || 10),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,

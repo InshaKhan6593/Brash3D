@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import process from "node:process"
 import nextEnv from "@next/env"
 import pg from "pg"
+import { sslConfig } from "../src/lib/db-ssl.mjs"
 import Stripe from "stripe"
 
 const { loadEnvConfig } = nextEnv
@@ -14,7 +15,7 @@ assert.ok(stripeSecret?.startsWith("sk_test_"), "Expected a Stripe Test Mode sec
 assert.ok(webhookSecret?.startsWith("whsec_"), "Expected a Stripe webhook signing secret")
 
 const stripe = new Stripe(stripeSecret)
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: sslConfig() })
 const stamp = Date.now()
 const referrerEmail = `webhook-referrer-${stamp}@example.com`
 const referredEmail = `webhook-referred-${stamp}@example.com`

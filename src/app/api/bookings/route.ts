@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { invalidBody, withErrorHandling } from "@/lib/api"
+import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { allowRequest, CUSTOMER_COOKIE, requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import {
   attachBookingCheckout,
@@ -16,12 +16,8 @@ async function POSTHandler(request: Request) {
   if (!requestHasSameOrigin(request)) {
     return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
   }
-  let body
-  try {
-    body = await request.json()
-  } catch {
-    return invalidBody()
-  }
+  const body = await readJsonBody(request)
+  if (!body) return invalidBody()
 
   const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
     || request.headers.get("x-real-ip")
@@ -48,13 +44,13 @@ async function POSTHandler(request: Request) {
     email,
     telefono: phone,
     ciudad: city,
-    pais: body.pais || "Colombia",
+    pais: typeof body.pais === "string" && body.pais ? body.pais : "Colombia",
     referralCode,
     requiresLocalInvoice: body.requiresLocalInvoice === true,
   }
 
   try {
-    const { booking, session, accessToken, rewardApplied } = await createBookingWithSession(customer, body.slotId)
+    const { booking, session, accessToken, rewardApplied } = await createBookingWithSession(customer, typeof body.slotId === "string" ? body.slotId : "")
     const customerCookie = {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",

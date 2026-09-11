@@ -1,21 +1,18 @@
 import { NextResponse } from "next/server"
-import { invalidBody, withErrorHandling } from "@/lib/api"
+import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { logger } from "@/lib/logger"
 import { requestHasSameOrigin, requireStaff, verifyCustomerAccess } from "@/lib/auth"
 import { query } from "@/lib/db"
 import { attachSessionCheckout, clearSessionCheckout } from "@/lib/store/sessionStore"
+import { finalAmount, initialAmount } from "@/lib/payment-split"
 import { getStripe } from "@/lib/stripe"
 
 export const runtime = "nodejs"
 
 async function POSTHandler(request: Request) {
   if (!requestHasSameOrigin(request)) return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
-  let body
-  try {
-    body = await request.json()
-  } catch {
-    return invalidBody()
-  }
+  const body = await readJsonBody(request)
+  if (!body) return invalidBody()
   const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
   const stage = body.stage === "final" ? "final" : body.stage === "inicial" ? "inicial" : null
   const address = typeof body.address === "string" ? body.address.trim() : ""
@@ -25,7 +22,7 @@ async function POSTHandler(request: Request) {
   if (stage === "inicial") {
     if (!await verifyCustomerAccess(sessionId, null)) return NextResponse.json({ error: "Session not found" }, { status: 404 })
     if (address.length < 8 || address.length > 500 || city.length < 2 || city.length > 100) {
-      return NextResponse.json({ error: "Enter a complete delivery address and city in Colombia" }, { status: 400 })
+      return NextResponse.json({ error: "Escribe una direccion de entrega completa y tu ciudad en Colombia." }, { status: 400 })
     }
   } else {
     const staff = await requireStaff(["admin", "local_team"])
@@ -33,26 +30,31 @@ async function POSTHandler(request: Request) {
   }
 
   const result = await query<{
-    total: string; email: string; paid: string; existing_checkout: string | null; shipment_status: string | null
+    total: string; porcentaje_inicial: string; email: string; paid: string; existing_checkout: string | null; shipment_status: string | null
   }>(`
-    SELECT sc.total::text, c.email,
-      CASE WHEN $2 = '65' THEN sc.monto_pagado_inicial::text ELSE sc.monto_pagado_final::text END AS paid,
-      CASE WHEN $2 = '65' THEN sc.checkout_session_inicial_id ELSE sc.checkout_session_final_id END AS existing_checkout,
+    SELECT sc.total::text, sc.porcentaje_inicial::text, c.email,
+      -- The stage is 'inicial' or 'final'. It was '65'/'35' until the split
+      -- became configurable, and these three comparisons kept the old literals:
+      -- every one was false, so an up-front payment read the final payment's
+      -- columns and the WHERE clause demanded a shipment the local team had
+      -- already received. The row never matched and no customer could pay.
+      CASE WHEN $2 = 'inicial' THEN sc.monto_pagado_inicial::text ELSE sc.monto_pagado_final::text END AS paid,
+      CASE WHEN $2 = 'inicial' THEN sc.checkout_session_inicial_id ELSE sc.checkout_session_final_id END AS existing_checkout,
       e.estado::text AS shipment_status
     FROM sesiones_compra sc JOIN clientes c ON c.id=sc.cliente_id
     LEFT JOIN envios e ON e.sesion_id=sc.id
     WHERE sc.id::text=$1 AND sc.estado='completada' AND sc.total > 0
-      AND ($2 = '65' OR (sc.monto_pagado_inicial > 0 AND e.estado='recibido_equipo_local'))
+      AND ($2 = 'inicial' OR (sc.monto_pagado_inicial > 0 AND e.estado='recibido_equipo_local'))
   `, [sessionId, stage])
   const session = result.rows[0]
-  if (!session) return NextResponse.json({ error: stage === "inicial" ? "Invoice is not ready" : "Shipment must be received by the local team first" }, { status: 409 })
-  if (Number(session.paid) > 0) return NextResponse.json({ error: "This payment is already complete" }, { status: 409 })
+  if (!session) return NextResponse.json({ error: stage === "inicial" ? "Tu factura todavia no esta lista. El vendedor debe cerrar la sesion primero." : "El equipo local debe registrar la recepcion del envio antes del pago final." }, { status: 409 })
+  if (Number(session.paid) > 0) return NextResponse.json({ error: "Este pago ya fue completado." }, { status: 409 })
   if (stage === "inicial") {
     const saved = await query(`
       UPDATE sesiones_compra SET direccion_entrega=$2, ciudad_entrega=$3, direccion_confirmada_at=now()
       WHERE id::text=$1 AND estado='completada' AND monto_pagado_inicial=0
     `, [sessionId, address, city])
-    if (!saved.rowCount) return NextResponse.json({ error: "The delivery address can no longer be changed" }, { status: 409 })
+    if (!saved.rowCount) return NextResponse.json({ error: "La direccion de entrega ya no se puede cambiar." }, { status: 409 })
   }
 
   let stripe
@@ -60,7 +62,7 @@ async function POSTHandler(request: Request) {
     stripe = getStripe()
   } catch (error) {
     logger.error("Stripe is not configured", { error, sessionId, stage })
-    return NextResponse.json({ error: "Payments are temporarily unavailable" }, { status: 503 })
+    return NextResponse.json({ error: "Los pagos no estan disponibles en este momento. Intentalo de nuevo en unos minutos." }, { status: 503 })
   }
   let retryMarker = "initial"
   if (session.existing_checkout) {
@@ -71,7 +73,19 @@ async function POSTHandler(request: Request) {
     await clearSessionCheckout(existing.id, stage)
   }
 
-  const amount = Math.round(Number(session.total) * Number(stage) / 100 * 100)
+  // Number(stage) was Number('65') or Number('35') before the split became
+  // configurable. With 'inicial'/'final' it is NaN, so Stripe was being asked to
+  // charge NaN cents. The amount now comes from the order's own percentage, via
+  // the same helpers the invoice and the seller panel use, so the two charges
+  // still add up to the total exactly.
+  const total = Number(session.total)
+  const percentage = Number(session.porcentaje_inicial)
+  const dueNow = stage === "inicial" ? initialAmount(total, percentage) : finalAmount(total, percentage)
+  const amount = Math.round(dueNow * 100)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    logger.error("Refusing to open a checkout for a non-positive amount", { sessionId, stage, total, percentage })
+    return NextResponse.json({ error: "No pudimos calcular el monto a pagar. Contacta al equipo de Brash3D." }, { status: 409 })
+  }
   const origin = new URL(request.url).origin
   const checkout = await stripe.checkout.sessions.create({
     mode: "payment",

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { withErrorHandling } from "@/lib/api"
+import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { transaction } from "@/lib/db"
 import { listBoxManifests } from "@/lib/store/shippingStore"
@@ -20,12 +20,8 @@ async function POSTHandler(request: Request) {
   if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   if (staff.role === "seller" && !staff.sellerId) return NextResponse.json({ error: "Seller account is not linked" }, { status: 403 })
 
-  let body: Record<string, unknown>
-  try {
-    body = await request.json() as Record<string, unknown>
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
-  }
+  const body = await readJsonBody(request)
+  if (!body) return invalidBody()
   const action = typeof body.action === "string" ? body.action : "createBox"
   const shipmentIds = Array.isArray(body.shipmentIds)
     ? [...new Set(body.shipmentIds.filter((id): id is string => typeof id === "string"))]

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
-import { invalidBody, withErrorHandling } from "@/lib/api"
+import type { EnvioEstado } from "@/lib/types"
+import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff, verifyCustomerAccess } from "@/lib/auth"
 import { isValidPercentage } from "@/lib/payment-split"
 import {
@@ -22,43 +23,44 @@ async function POSTHandler(request: Request) {
   if (!requestHasSameOrigin(request)) {
     return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
   }
-  let body
-  try {
-    body = await request.json()
-  } catch {
-    return invalidBody()
-  }
+  const body = await readJsonBody(request)
+  if (!body) return invalidBody()
   const { action, ...data } = body
+  // Narrowed once, because the body is now `unknown`-valued rather than `any`.
+  // Previously these flowed unvalidated into typed parameters: a JSON object
+  // or array where a string was expected type-checked fine and failed deeper in.
+  const sessionId = typeof data.sessionId === "string" ? data.sessionId : ""
+  const nombre = typeof data.nombre === "string" ? data.nombre : ""
 
   const staff = await requireStaff(["admin", "seller"])
   if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
   if (action === "createCustomerAccess") {
-    const session = await getSession(data.sessionId)
+    const session = await getSession(sessionId)
     if (!session || (staff.role === "seller" && session.vendedorId !== staff.sellerId)) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 })
     }
-    const accessToken = await rotateCustomerAccess(data.sessionId)
+    const accessToken = await rotateCustomerAccess(sessionId)
     return NextResponse.json({ accessToken })
   }
 
-  const targetSession = await getSession(data.sessionId)
+  const targetSession = await getSession(sessionId)
   if (!targetSession || (staff.role === "seller" && targetSession.vendedorId !== staff.sellerId)) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 })
   }
 
   if (action === "addProduct") {
-    if (!data.sessionId || !data.nombre?.trim() || !Number.isFinite(Number(data.precio)) || Number(data.precio) <= 0) {
+    if (!sessionId || !nombre?.trim() || !Number.isFinite(Number(data.precio)) || Number(data.precio) <= 0) {
       return NextResponse.json({ error: "A valid session, product name, and price are required" }, { status: 400 })
     }
 
-    const session = await addProductToSession(data.sessionId, {
-      nombre: data.nombre.trim(),
+    const session = await addProductToSession(sessionId, {
+      nombre: nombre.trim(),
       sku: typeof data.sku === "string" ? data.sku.replace(/^sku[\s:#-]*/i, "").trim() : undefined,
       precio: Number(data.precio),
       cantidad: Math.max(1, Number(data.cantidad) || 1),
-      notas: data.notas,
-      urlImagen: data.urlImagen,
+      notas: typeof data.notas === "string" ? data.notas : undefined,
+      urlImagen: typeof data.urlImagen === "string" ? data.urlImagen : undefined,
     })
 
     if (!session) {
@@ -69,7 +71,7 @@ async function POSTHandler(request: Request) {
   }
 
   if (action === "start") {
-    const session = await startSession(data.sessionId)
+    const session = await startSession(sessionId)
     if (!session) {
       return NextResponse.json(
         { error: "Only a confirmed session that has not started can be started" },
@@ -84,7 +86,7 @@ async function POSTHandler(request: Request) {
     if (!Number.isInteger(delta) || Math.abs(delta) !== 1) {
       return NextResponse.json({ error: "Quantity change must be 1 or -1" }, { status: 400 })
     }
-    const session = await updateProductQuantity(data.sessionId, data.productId, delta)
+    const session = await updateProductQuantity(sessionId, typeof data.productId === "string" ? data.productId : "", delta)
 
     if (!session) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 })
@@ -94,7 +96,7 @@ async function POSTHandler(request: Request) {
   }
 
   if (action === "removeProduct") {
-    const session = await removeProductFromSession(data.sessionId, data.productId)
+    const session = await removeProductFromSession(sessionId, typeof data.productId === "string" ? data.productId : "")
 
     if (!session) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 })
@@ -111,7 +113,7 @@ async function POSTHandler(request: Request) {
         { status: 400 }
       )
     }
-    const session = await closeSession(data.sessionId, initialPercentage)
+    const session = await closeSession(sessionId, initialPercentage)
 
     if (!session) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 })
@@ -124,7 +126,7 @@ async function POSTHandler(request: Request) {
     if (staff.role !== "admin") {
       return NextResponse.json({ error: "Only an admin can reopen a closed session" }, { status: 403 })
     }
-    const session = await reopenSessionForCorrection(data.sessionId, staff.id)
+    const session = await reopenSessionForCorrection(sessionId, staff.id)
     if (!session) {
       return NextResponse.json({ error: "Only a closed, unpaid session without a shipment or active checkout can be reopened" }, { status: 409 })
     }
@@ -135,11 +137,12 @@ async function POSTHandler(request: Request) {
     // Per the client workflow, seller/admin creates the individual shipment.
     // USA operations handles consolidation; receipt, delivery, and final payment
     // belong to the Colombia local-team API.
-    const allowed = ["preparacion"]
-    if (!allowed.includes(data.status)) {
+    const allowed = ["preparacion"] as const
+    const status = typeof data.status === "string" ? data.status : ""
+    if (!allowed.includes(status as (typeof allowed)[number])) {
       return NextResponse.json({ error: "Invalid delivery status" }, { status: 400 })
     }
-    const session = await updateDeliveryStatus(data.sessionId, data.status)
+    const session = await updateDeliveryStatus(sessionId, status as EnvioEstado)
     if (!session) {
       return NextResponse.json(
         { error: "Complete the current delivery step after the 65% payment is confirmed" },

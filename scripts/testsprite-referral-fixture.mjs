@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import process from "node:process"
 import nextEnv from "@next/env"
 import pg from "pg"
+import { sslConfig } from "../src/lib/db-ssl.mjs"
 
 const { loadEnvConfig } = nextEnv
 loadEnvConfig(process.cwd())
@@ -9,7 +10,7 @@ loadEnvConfig(process.cwd())
 const action = process.argv[2]
 assert.ok(["setup", "cleanup"].includes(action), "Usage: node scripts/testsprite-referral-fixture.mjs <setup|cleanup>")
 
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: sslConfig() })
 const referrerEmail = "testsprite-referral-fixture@local.test"
 const referredEmail = "testsprite-referred-fixture@local.test"
 const referralCode = "BR3D-TESTSPRITE-FIXTURE"

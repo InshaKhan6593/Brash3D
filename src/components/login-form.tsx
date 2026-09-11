@@ -1,7 +1,6 @@
 "use client"
 
 import { FormEvent, useState } from "react"
-import { useRouter } from "next/navigation"
 import { LockKeyhole } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,7 +9,6 @@ import { Label } from "@/components/ui/label"
 import { ModeToggle } from "@/components/mode-toggle"
 
 export function LoginForm() {
-  const router = useRouter()
   const [error, setError] = useState("")
   const [submitting, setSubmitting] = useState(false)
 
@@ -27,11 +25,14 @@ export function LoginForm() {
       })
       const body = await response.json() as { error?: string; user?: { role: string } }
       if (!response.ok) throw new Error(body.error || "Unable to sign in")
-      router.replace(body.user?.role === "local_team" ? "/local-team" : "/seller")
-      router.refresh()
+      // Full document load rather than router.replace(): the session cookie was
+      // only just set on this response, and a soft navigation can reuse the
+      // router's pre-login entry for the destination and bounce straight back
+      // here, which looks like the button doing nothing. `submitting` stays true
+      // so the button is disabled while the browser navigates away.
+      window.location.assign(body.user?.role === "local_team" ? "/local-team" : "/seller")
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Unable to sign in")
-    } finally {
       setSubmitting(false)
     }
   }

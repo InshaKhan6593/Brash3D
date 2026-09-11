@@ -5,6 +5,7 @@ import process from "node:process"
 import { fileURLToPath } from "node:url"
 import nextEnv from "@next/env"
 import pg from "pg"
+import { sslConfig } from "../src/lib/db-ssl.mjs"
 
 const { loadEnvConfig } = nextEnv
 
@@ -13,7 +14,12 @@ loadEnvConfig(appDirectory)
 
 const connectionString = process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5440/brash3d"
 const migrationsDirectory = path.resolve(appDirectory, "supabase", "migrations")
-const pool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis: 5000 })
+const pool = new pg.Pool({
+  connectionString,
+  ssl: sslConfig(connectionString),
+  max: 1,
+  connectionTimeoutMillis: 5000,
+})
 
 try {
   await pool.query(`

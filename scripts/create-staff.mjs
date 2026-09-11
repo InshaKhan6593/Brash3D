@@ -1,6 +1,7 @@
 import process from "node:process"
 import nextEnv from "@next/env"
 import pg from "pg"
+import { sslConfig } from "../src/lib/db-ssl.mjs"
 import { hashPassword } from "../src/lib/password.mjs"
 
 const { loadEnvConfig } = nextEnv
@@ -19,7 +20,7 @@ if (!password || password.length < 12 || !/[A-Z]/.test(password) || !/[a-z]/.tes
 if (!["admin", "seller", "local_team"].includes(role)) throw new Error("Invalid role")
 
 const { hash, salt } = await hashPassword(password)
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 1 })
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: sslConfig(), max: 1 })
 try {
   let sellerId = null
   let localTeamId = null

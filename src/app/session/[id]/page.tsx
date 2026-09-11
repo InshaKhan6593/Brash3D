@@ -84,7 +84,20 @@ function ReferralInviteCard({ history }: { history: CustomerPurchaseHistory | nu
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 truncate rounded-md bg-muted px-3 py-2 text-center text-base font-semibold tracking-wide">{code}</code>
         <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => void copyCode()} aria-label="Copiar código de referido">
-          {copied ? <><Check />Copiado</> : <><Copy />Copiar</>}
+          {/*
+            Both icons stay mounted and visibility is toggled in CSS, so this
+            button never inserts or removes a DOM node — only text changes.
+            It was a ternary returning `<><Check />Copiado</>` against
+            `<><Copy />Copiar</>`: React reconciled the two as one Fragment,
+            diffed its children by index, and swapped an <svg> while the
+            adjacent text node shifted, which surfaced as an insertBefore
+            NotFoundError mid-render. Swapping the icon alone still leaves a
+            mount/unmount at that position; keeping both removes the operation
+            React was failing to perform.
+          */}
+          <Check aria-hidden className={copied ? undefined : "hidden"} />
+          <Copy aria-hidden className={copied ? "hidden" : undefined} />
+          {copied ? "Copiado" : "Copiar"}
         </Button>
       </div>
       {history.availableReferralRewards > 0
@@ -179,12 +192,12 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
     const form = new FormData(event.currentTarget)
     setPaymentError("")
     setPaymentStarting(true)
-    const started = await pay({
+    const failure = await pay({
       city: String(form.get("city") || ""),
       address: String(form.get("address") || ""),
     })
-    if (!started) {
-      setPaymentError("Revisa la dirección de entrega e inténtalo de nuevo.")
+    if (failure) {
+      setPaymentError(failure)
       setPaymentStarting(false)
     }
   }

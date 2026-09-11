@@ -1,8 +1,7 @@
 "use client"
 
-import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react"
+import { Fragment, FormEvent, ReactNode, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
 import {
   ArrowLeft,
   CalendarDays,
@@ -22,11 +21,14 @@ import {
   Pencil,
   Plus,
   ReceiptText,
+  CalendarCog,
   ShoppingCart,
   Trash2,
   Users,
   X,
 } from "lucide-react"
+import { matchesBookingFilter, type BookingFilter } from "@/lib/booking-filters"
+import { SchedulePanel } from "@/components/schedule-panel"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -65,8 +67,7 @@ import { ConsolidatedBoxManifest, CustomerPurchaseHistory, EnvioEstado, SesionCo
 import { DEFAULT_INITIAL_PERCENTAGE, finalAmount, initialAmount, isValidPercentage } from "@/lib/payment-split"
 import { cn, formatCurrency, formatDate, formatDateTime, formatPercent } from "@/lib/utils"
 
-type DashboardTab = "overview" | "bookings" | "customers" | "sessions" | "shipping"
-type BookingFilter = "all" | "today" | "upcoming" | "payment_pending" | "in_progress" | "completed"
+type DashboardTab = "overview" | "bookings" | "customers" | "sessions" | "shipping" | "schedule"
 
 interface SellerPanelProps {
   sessionId: string | null
@@ -168,12 +169,16 @@ function OverviewDashboard({ sessions, boxes }: { sessions: SesionCompra[]; boxe
   const now = new Date()
   const today = now.toLocaleDateString("en-CA")
   const scheduledTime = (session: SesionCompra) => new Date(session.fechaHoraProgramada || session.fechaInicio)
+  // Unfinished work, not only work that has yet to start — an appointment whose
+  // slot time has passed but which nobody has closed is still today's business,
+  // and dropping it left the panel claiming "No appointments today" during a
+  // live session.
   const upcoming = sessions
-    .filter((session) => scheduledTime(session) >= now && session.bookingEstado !== "cancelada")
+    .filter((session) => session.estado !== "completada" && session.bookingEstado !== "cancelada")
     .sort((a, b) => scheduledTime(a).getTime() - scheduledTime(b).getTime())
   const todayBookings = upcoming.filter((session) => scheduledTime(session).toLocaleDateString("en-CA") === today)
   const schedule = (todayBookings.length ? todayBookings : upcoming).slice(0, 6)
-  const liveCount = sessions.filter((session) => session.estado === "en_progreso" && session.startedAt).length
+  const liveCount = sessions.filter((session) => session.estado === "en_progreso").length
   const pendingBookingCount = sessions.filter((session) => session.bookingEstado === "pendiente_pago").length
   const completedCount = sessions.filter((session) => session.estado === "completada").length
   const customerCount = new Set(sessions.map((session) => session.clienteId)).size
@@ -315,19 +320,19 @@ function ShippingOperations({
       <Dialog open={createOpen} onOpenChange={(open) => { setCreateOpen(open); if (!open) setReviewing(false) }}>
         <DialogTrigger asChild><Button><Package />Create dispatch box</Button></DialogTrigger>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-          {!reviewing ? <>
+          {!reviewing ? <Fragment key="compose">
             <DialogHeader><DialogTitle>Create dispatch box</DialogTitle><DialogDescription>Select unassigned shipments and save this box as a draft. Dispatch happens separately after a final review.</DialogDescription></DialogHeader>
             <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); setReviewing(true) }}>
               <div className="grid gap-3 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="box-courier">Courier</Label><Input id="box-courier" value={courier} maxLength={255} onChange={(event) => onCourierChange(event.target.value)} required /></div><div className="space-y-2"><Label htmlFor="box-tracking">Tracking number</Label><Input id="box-tracking" value={tracking} maxLength={100} onChange={(event) => onTrackingChange(event.target.value)} required /></div></div>
               <div className="space-y-3"><div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center"><div><p className="text-sm font-medium">Unassigned shipments</p><p className="text-xs text-muted-foreground">{selectedShipments.length} selected · {readyShipments.length} ready</p></div><Input aria-label="Search shipments" placeholder="Search customer or label" value={search} onChange={(event) => setSearch(event.target.value)} className="sm:max-w-xs" /></div><div className="max-h-72 overflow-y-auto rounded-lg border">{filteredShipments.length === 0 ? <p className="p-4 text-sm text-muted-foreground">{readyShipments.length === 0 ? "No seller-prepared shipments are waiting to be boxed." : "No shipments match your search."}</p> : filteredShipments.map((item) => { const shipmentId = item.envio!.id; const checked = selectedShipments.includes(shipmentId); return <label key={shipmentId} className="flex cursor-pointer items-start gap-3 border-b p-3 last:border-b-0 hover:bg-muted/50"><input type="checkbox" checked={checked} onChange={() => onToggleShipment(shipmentId)} className="mt-1 size-4 accent-primary" /><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">{item.cliente.nombre}</span><span className="font-mono text-xs text-muted-foreground">{item.envio?.labelCode}</span></span><span className="mt-1 block text-xs text-muted-foreground">{item.cliente.ciudad || item.cliente.pais} · {item.productos.reduce((sum, product) => sum + product.cantidad, 0)} item{item.productos.reduce((sum, product) => sum + product.cantidad, 0) === 1 ? "" : "s"} · {item.productos.map((product) => `${product.nombre} × ${product.cantidad}`).join(", ") || "No products"}</span></span></label> })}</div></div>
               <DialogFooter><Button type="button" variant="outline" onClick={resetCreateDialog}>Cancel</Button><Button type="submit" disabled={!selectedShipments.length || !courier.trim() || !tracking.trim()}>Review dispatch ({selectedShipments.length})</Button></DialogFooter>
             </form>
-          </> : <>
+          </Fragment> : <Fragment key="review">
             <DialogHeader><DialogTitle>Review new dispatch box</DialogTitle><DialogDescription>Check the customer and product breakdown before creating this editable draft box.</DialogDescription></DialogHeader>
             <div className="space-y-4"><div className="grid gap-3 rounded-lg bg-muted/60 p-4 text-sm sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">Courier</p><p className="font-medium">{courier}</p></div><div><p className="text-xs text-muted-foreground">Tracking</p><p className="font-mono font-medium">{tracking}</p></div></div><div className="rounded-lg border"><div className="border-b px-4 py-3"><p className="font-medium">Box contents</p><p className="text-xs text-muted-foreground">{selectedPackages.length} customer shipment{selectedPackages.length === 1 ? "" : "s"}</p></div><div className="divide-y">{selectedPackages.map((item) => <div key={item.envio!.id} className="p-4"><div className="flex flex-wrap justify-between gap-2"><div><p className="font-medium">{item.cliente.nombre}</p><p className="text-xs text-muted-foreground">{item.cliente.ciudad || item.cliente.pais} · {item.envio?.labelCode}</p></div><span className="text-sm font-medium">{formatCurrency(item.total)}</span></div><div className="mt-3 space-y-1 text-sm text-muted-foreground">{item.productos.map((product) => <div key={product.id} className="flex justify-between gap-3"><span>{product.nombre} × {product.cantidad}</span><span>{formatCurrency(product.precio * product.cantidad)}</span></div>)}</div></div>)}</div></div></div>
             {message && <p className="text-sm text-muted-foreground">{message}</p>}
             <DialogFooter><Button type="button" variant="outline" onClick={() => setReviewing(false)} disabled={saving}>Back</Button><Button type="button" onClick={() => void confirmDispatch()} disabled={saving}>{saving ? "Creating…" : "Create draft box"}</Button></DialogFooter>
-          </>}
+          </Fragment>}
         </DialogContent>
       </Dialog>
     </div>
@@ -442,33 +447,42 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogTrigger asChild><Button className="w-full" variant="destructive" disabled={session.productos.length === 0}><X />Close session and invoice</Button></DialogTrigger>
-    <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-      <DialogHeader><DialogTitle>Close session and create invoice?</DialogTitle><DialogDescription>This action locks the cart totals and starts the customer’s payment step. Check the invoice and the split before confirming.</DialogDescription></DialogHeader>
+    {/*
+      A pinned header and footer with only the middle scrolling. The whole
+      dialog used to be one `overflow-y-auto` box, so on a laptop-height screen
+      the title scrolled out of view and Confirm sat below the fold with no
+      sign it was there.
+    */}
+    <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+      <DialogHeader className="shrink-0 space-y-1.5 border-b px-6 py-4 text-left"><DialogTitle>Close session and create invoice?</DialogTitle><DialogDescription>This action locks the cart totals and starts the customer’s payment step. Check the invoice and the split before confirming.</DialogDescription></DialogHeader>
 
+      <div className="dialog-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
       <div className="space-y-3 rounded-lg bg-muted/60 p-4 text-sm"><div className="flex justify-between gap-4"><span>Items</span><span className="font-medium">{session.productos.reduce((sum, product) => sum + product.cantidad, 0)}</span></div><div className="flex justify-between gap-4"><span>Subtotal</span><span>{formatCurrency(subtotal)}</span></div><div className="flex justify-between gap-4"><span>Florida tax ({formatPercent(session.tasaImpuesto)})</span><span>{formatCurrency(tax)}</span></div><div className="flex justify-between gap-4"><span>Brash3D fee ({formatPercent(session.tasaComision)})</span><span>{formatCurrency(fee)}</span></div><div className="flex justify-between gap-4 border-t pt-3 text-base font-bold"><span>Total invoice</span><span>{formatCurrency(total)}</span></div></div>
 
-      <div className="space-y-3 rounded-lg border p-4">
+      <div className="space-y-3">
         <div className="space-y-1">
           <Label htmlFor="initial-percentage">Paid up front</Label>
           <p className="text-xs text-muted-foreground">Choose how much this customer pays now. The rest is collected on delivery.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-4 gap-2">
           {[100, 85, 65, 50].map((preset) => (
             <Button key={preset} type="button" size="sm" variant={parsed === preset ? "default" : "outline"} onClick={() => setPercentage(String(preset))}>{preset}%</Button>
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <Input id="initial-percentage" type="number" min="1" max="100" step="1" inputMode="numeric" className="h-9 w-28" value={percentage} onChange={(event) => setPercentage(event.target.value)} />
+          <Input id="initial-percentage" type="number" min="1" max="100" step="1" inputMode="numeric" className="h-9 w-24" value={percentage} onChange={(event) => setPercentage(event.target.value)} />
           <span className="text-sm text-muted-foreground">% up front</span>
         </div>
-        {!valid ? <p className="text-sm text-destructive">Enter a percentage between 1 and 100.</p> : <div className="space-y-1 rounded-md bg-muted/60 p-3 text-sm">
-          <div className="flex justify-between gap-4"><span>Customer pays now</span><span className="font-semibold">{formatCurrency(upFront)}</span></div>
-          <div className="flex justify-between gap-4"><span>{onDelivery > 0 ? "Collected on delivery" : "Nothing to collect on delivery"}</span><span className="font-semibold">{formatCurrency(onDelivery)}</span></div>
+        {!valid ? <p className="text-sm text-destructive">Enter a percentage between 1 and 100.</p> : <div className="space-y-1 border-t pt-3 text-sm">
+          <div className="flex justify-between gap-4"><span className="text-muted-foreground">Customer pays now</span><span className="font-semibold">{formatCurrency(upFront)}</span></div>
+          <div className="flex justify-between gap-4"><span className="text-muted-foreground">{onDelivery > 0 ? "Collected on delivery" : "Nothing to collect on delivery"}</span><span className="font-semibold">{formatCurrency(onDelivery)}</span></div>
         </div>}
       </div>
 
-      <div className="rounded-md border p-3 text-sm"><p className="font-medium">Products</p><div className="mt-2 space-y-1 text-muted-foreground">{session.productos.map((product) => <p key={product.id}>{product.nombre} × {product.cantidad}</p>)}</div></div>
-      <DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="button" variant="destructive" disabled={!valid} onClick={() => void onConfirm(parsed)}>Confirm and create invoice</Button></DialogFooter>
+      <div className="space-y-1 border-t pt-4 text-sm"><p className="font-medium">Products</p><div className="space-y-1 text-muted-foreground">{session.productos.map((product) => <p key={product.id}>{product.nombre} × {product.cantidad}</p>)}</div></div>
+      </div>
+
+      <DialogFooter className="shrink-0 gap-2 border-t px-6 py-4"><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="button" variant="destructive" disabled={!valid} onClick={() => void onConfirm(parsed)}>Confirm and create invoice</Button></DialogFooter>
     </DialogContent>
   </Dialog>
 }
@@ -629,7 +643,6 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
   const bookingSlots = slots.filter((slot) => slot.date === activeBookingDate)
   const filteredBookings = useMemo(() => {
     const now = new Date()
-    const today = now.toLocaleDateString("en-CA")
     const search = bookingSearch.trim().toLowerCase()
     return sessions
       .filter((item) => {
@@ -638,13 +651,7 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
         const matchesSearch = !search || [item.cliente.nombre, item.cliente.email, item.cliente.telefono]
           .some((value) => value.toLowerCase().includes(search))
         const matchesDate = !bookingFilterDate || date === bookingFilterDate
-        const matchesQuickFilter = bookingFilter === "all"
-          || (bookingFilter === "today" && date === today)
-          || (bookingFilter === "upcoming" && scheduled >= now && item.estado !== "completada" && item.bookingEstado !== "cancelada")
-          || (bookingFilter === "payment_pending" && item.bookingEstado === "pendiente_pago")
-          || (bookingFilter === "in_progress" && Boolean(item.startedAt) && item.estado === "en_progreso")
-          || (bookingFilter === "completed" && item.estado === "completada")
-        return matchesSearch && matchesDate && matchesQuickFilter
+        return matchesSearch && matchesDate && matchesBookingFilter(item, bookingFilter, now)
       })
       .sort((a, b) => {
         const left = new Date(a.fechaHoraProgramada || a.fechaInicio).getTime()
@@ -926,7 +933,7 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
 
     return (
       <SidebarProvider>
-        <SellerSidebar active="sessions" onSelect={null} />
+        <SellerSidebar active="sessions" onSelect={null} isAdmin={isAdmin} />
         <SidebarInset className="w-0 min-w-0">
           <header className="flex items-center justify-between border-b bg-background px-4 py-4 lg:px-8"><div className="flex items-center gap-3"><SidebarTrigger /><div><Button asChild variant="link" className="h-auto p-0 text-muted-foreground"><Link href="/seller">Seller dashboard</Link></Button><h1 className="text-xl font-bold">{session.cliente.nombre}</h1></div></div><div className="flex flex-wrap items-center justify-end gap-2">{session.requiresLocalInvoice && <Badge variant="outline"><FileText />Local invoice requested</Badge>}<span className="font-mono font-semibold"><Clock className="mr-1 inline size-4" />{isActive ? `${minutes}:${seconds}` : "Not started"}</span>{session.envio && <Badge variant="outline" aria-label={`Shipment status: ${shipmentStatusLabel(session.envio.estado)}`}>Shipment: {shipmentStatusLabel(session.envio.estado)}</Badge>}<ModeToggle /><Button variant="outline" size="sm" onClick={() => void copyCustomerLink()}><Copy />Customer link</Button></div></header>
           <div className="grid gap-6 p-4 lg:grid-cols-[minmax(0,1fr)_340px] lg:p-8">
@@ -949,7 +956,7 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
 
   return (
     <SidebarProvider>
-      <SellerSidebar active={activeTab} onSelect={switchTab} />
+      <SellerSidebar active={activeTab} onSelect={switchTab} isAdmin={isAdmin} />
       <SidebarInset className="w-0 min-w-0">
         <header className="flex flex-col justify-between gap-4 border-b px-4 py-5 sm:flex-row sm:items-center lg:px-8">
           <div className="flex items-center gap-3"><SidebarTrigger className="-ml-1" /><div><p className="text-sm text-muted-foreground">Brash3D operations</p><h1 className="text-2xl font-bold capitalize">{activeTab}</h1></div></div>
@@ -1009,25 +1016,29 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
           {activeTab === "customers" && <TableCard title="Customers" description="Customers with a booking or shopping session."><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>WhatsApp</TableHead><TableHead>City</TableHead><TableHead>Last activity</TableHead><TableHead className="text-right">Latest order</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.clienteId}><TableCell><p className="font-medium">{item.cliente.nombre}</p><p className="text-xs text-muted-foreground">{item.cliente.email}</p></TableCell><TableCell>{item.cliente.telefono}</TableCell><TableCell>{item.cliente.ciudad || item.cliente.pais}</TableCell><TableCell>{formatDateTime(item.fechaInicio)}</TableCell><TableCell className="text-right font-medium">{formatCurrency(item.total)}</TableCell><TableCell className="text-right"><RowActions session={item} onViewHistory={openCustomerHistory} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={customers.length} onChange={setPage} /></TableCard>}
           {activeTab === "sessions" && <TableCard title="Shopping sessions" description="Customer sessions and shipment progress."><div className="border-b px-4 py-4"><Input aria-label="Search sessions" placeholder="Search customer, session ID, or shipment code" value={sessionSearch} onChange={(event) => { setSessionSearch(event.target.value); setPage(1) }} /></div><p className="border-b px-4 py-3 text-xs text-muted-foreground">{filteredSessions.length} matching session{filteredSessions.length === 1 ? "" : "s"}</p><Table className="!w-full !table-fixed [&_th]:!py-2 [&_td]:!py-2"><TableHeader><TableRow><TableHead className="w-[13%]">Session ID</TableHead><TableHead className="w-[14%]">Date</TableHead><TableHead className="w-[21%]">Customer</TableHead><TableHead className="w-[20%]">Assignment</TableHead><TableHead className="w-[20%]">Order stage</TableHead><TableHead className="w-[24%]">Shipment code</TableHead><TableHead className="w-[8%] text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell title={item.id} className="font-mono text-xs">{item.id.slice(-8).toUpperCase()}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDateTime(item.fechaHoraProgramada || item.fechaInicio)}</TableCell><TableCell>{item.cliente.nombre}</TableCell><TableCell><p className="text-sm font-medium">{item.vendedor.nombre}</p><p className="text-xs text-muted-foreground">{item.vendedor.tiendaAsignada || "Assigned seller"}</p></TableCell><TableCell className="whitespace-nowrap"><OrderStage session={item} /></TableCell><TableCell title={item.envio?.labelCode || "—"} className="max-w-48 font-mono text-xs"><span className="block truncate">{item.envio?.labelCode || "—"}</span></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredSessions.length} onChange={setPage} /></TableCard>}
           </>}
+          {activeTab === "schedule" && isAdmin && <SchedulePanel />}
         </div>
       </SidebarInset>
     </SidebarProvider>
   )
 }
 
-function SellerSidebar({ active, onSelect }: { active: DashboardTab; onSelect: ((tab: DashboardTab) => void) | null }) {
-  const router = useRouter()
+function SellerSidebar({ active, onSelect, isAdmin }: { active: DashboardTab; onSelect: ((tab: DashboardTab) => void) | null; isAdmin: boolean }) {
   const items: { id: DashboardTab; label: string; icon: ReactNode }[] = [
     { id: "overview", label: "Overview", icon: <LayoutDashboard /> },
     { id: "bookings", label: "Bookings", icon: <CalendarDays /> },
     { id: "customers", label: "Customers", icon: <Users /> },
     { id: "sessions", label: "Sessions", icon: <ReceiptText /> },
     { id: "shipping", label: "Shipping", icon: <Package /> },
+    // Changing opening hours moves every customer's bookable slot, so it stays admin-only.
+    ...(isAdmin ? [{ id: "schedule" as const, label: "Schedule", icon: <CalendarCog /> }] : []),
   ]
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" })
-    router.replace("/login")
-    router.refresh()
+    // Full document load: a soft navigation would keep this panel's fetched
+    // data in memory and can reuse the router's stale entry for /login.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a soft navigation is exactly what breaks here.
+    window.location.assign("/login")
   }
   return (
     <Sidebar collapsible="offcanvas" variant="inset">

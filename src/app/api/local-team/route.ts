@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { invalidBody, withErrorHandling } from "@/lib/api"
+import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { transaction } from "@/lib/db"
 import { listSessions } from "@/lib/store/sessionStore"
@@ -30,12 +30,8 @@ async function POSTHandler(request: Request) {
   if (!requestHasSameOrigin(request)) return NextResponse.json({ error: "Invalid request origin" }, { status: 403 })
   const staff = await requireStaff(["admin", "local_team"])
   if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  let body
-  try {
-    body = await request.json()
-  } catch {
-    return invalidBody()
-  }
+  const body = await readJsonBody(request)
+  if (!body) return invalidBody()
 
   if (body.action === "receiveBox") {
     const boxId = typeof body.boxId === "string" ? body.boxId : ""
