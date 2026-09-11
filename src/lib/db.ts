@@ -2,6 +2,7 @@ import "server-only"
 
 import { Pool, type PoolClient, type QueryResultRow } from "pg"
 import { sslConfig } from "@/lib/db-ssl.mjs"
+import { logger } from "@/lib/logger"
 
 const globalDatabase = globalThis as typeof globalThis & {
   __brash3dPool?: Pool
@@ -29,6 +30,17 @@ export const db =
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
   })
+
+// An idle pooled connection can fail on its own: a managed pooler recycles a
+// node, or the backend terminates the socket. pg reports that as an "error"
+// event on the pool, and an unhandled one takes the whole process down. The
+// pool discards the broken client by itself, so recording the failure is all
+// that is needed to survive a transient outage.
+if (!globalDatabase.__brash3dPool) {
+  db.on("error", (error) => {
+    logger.error("Idle PostgreSQL client failed", { error })
+  })
+}
 
 if (process.env.NODE_ENV !== "production") {
   globalDatabase.__brash3dPool = db
