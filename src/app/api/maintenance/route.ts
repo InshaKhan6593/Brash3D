@@ -33,3 +33,11 @@ async function POSTHandler(request: Request) {
 }
 
 export const POST = withErrorHandling("POST /api/maintenance", POSTHandler)
+
+/**
+ * Vercel Cron invokes its target with GET, not POST, so the same work is
+ * reachable under both verbs. This is not an unguarded read: the bearer check
+ * above runs either way, and Vercel sends `Authorization: Bearer $CRON_SECRET`,
+ * so `MAINTENANCE_SECRET` and `CRON_SECRET` must be set to the same value.
+ */
+export const GET = withErrorHandling("GET /api/maintenance", POSTHandler)
