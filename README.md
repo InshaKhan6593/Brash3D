@@ -93,16 +93,29 @@ The schema and migrations run on Supabase unchanged. Point `DATABASE_URL` at the
 project's pooler endpoint and request TLS:
 
 ```
-DATABASE_URL=postgresql://<user>:<password>@<host>:6543/postgres?sslmode=verify-full
-DATABASE_POOL_MAX=5
+DATABASE_URL=postgresql://<user>:<password>@<host>:5432/postgres
+DATABASE_SSL_CA_FILE=certs/supabase-root-2021.crt
+DATABASE_POOL_MAX=10
 ```
+
+Use the **session** pooler (port 5432) for a long-running host and the
+**transaction** pooler (port 6543) for a serverless one, where every concurrent
+instance opens its own connection. `sslmode` in the URL is ignored: TLS comes
+from `src/lib/db-ssl.mjs`, and Supabase signs its certificates with a private
+root that no system trust store carries, so the CA above must be supplied.
+`DATABASE_SSL_CA` carries the same PEM inline for hosts that expose only
+environment values.
 
 Then `npm run db:migrate`. The runner drops the `supabase_realtime` publication
 that every Supabase project pre-creates, but only when the target database is
 completely empty, so migration 001 can define it. Existing databases are never
 touched. See [Specification decisions](docs/SPEC_DECISIONS.md) for the detail.
 
-Supabase Auth, RLS, and Realtime are not wired up yet; see the same document.
+Row level security is enabled on every public table by migration 015, which is
+what stops Supabase's PostgREST endpoint serving the schema to anyone holding
+the publishable key. The application connects as the table owner and so is
+unaffected. Supabase Auth and Realtime are still unused: staff sessions are the
+app's own, and the session views poll.
 
 ## Logging
 
@@ -114,57 +127,80 @@ No logging SDK is used, so any aggregator can ingest the output directly. Point
 the host's log drain at it, or add an error tracker later without touching the
 call sites.
 
-## Production deployment
+## Deploying
 
-- Use a managed PostgreSQL database and run `npm run db:migrate` during deployment.
-- Set `STRIPE_MODE=live` with a rotated live secret and production webhook signing secret.
-- Register the public HTTPS endpoint `/api/stripe/webhook` in Stripe.
-- Create unique staff accounts with strong passwords; do not reuse local credentials.
-- Run behind HTTPS so secure authentication cookies are enforced.
-- Configure database backups, ship the JSON logs to an aggregator, and set up uptime monitoring.
-- Terminate TLS in front of the app: the auth cookies are `secure` in production and `Strict-Transport-Security` is sent on every response.
-- Add Meta WhatsApp and courier credentials only after the client selects those providers.
+The app is one deployable unit and the database stays on Supabase, so a
+deployment is a single service. Two hosts are configured in the repository and
+neither interferes with the other: Vercel ignores `railway.json`, Railway
+ignores `vercel.json`.
 
-## Deploying to Railway
+The difference that matters is whether the host keeps a process alive:
 
-Railway runs the app as a persistent container and Supabase keeps hosting the
-database, so only one service is deployed here. Because the container is
-long-lived, the in-process maintenance timer works and no platform cron is
-needed: leave `MAINTENANCE_INTERVAL_MINUTES` at its default and leave
-`MAINTENANCE_SECRET` unset.
+| | Railway (persistent) | Vercel (serverless) |
+| --- | --- | --- |
+| `DATABASE_URL` pooler port | `5432` session | `6543` transaction |
+| `DATABASE_POOL_MAX` | `10` | `1` — each instance pools separately |
+| `MAINTENANCE_INTERVAL_MINUTES` | `5` — the in-process timer runs | `0` — a frozen instance never fires a timer |
+| Maintenance driven by | `src/instrumentation.ts` | platform cron → `/api/maintenance` |
+| CA certificate | `DATABASE_SSL_CA_FILE=certs/...` | `DATABASE_SSL_CA=<PEM>` |
+| Migrations | `preDeployCommand` in `railway.json` | run `npm run db:migrate` by hand |
 
-[`railway.json`](railway.json) pins the build and start commands, runs
-`npm run db:migrate` as the pre-deploy step, and points the healthcheck at
-`/api/health`. That route returns 503 when the database is unreachable, so a
-bad `DATABASE_URL` fails the deploy instead of serving a broken site.
+The certificate difference is not cosmetic. `DATABASE_SSL_CA_FILE` is read at
+runtime from a path held in an environment variable, which Next cannot trace,
+so the file is never bundled into a serverless function and the connection
+fails. Serverless hosts must use `DATABASE_SSL_CA` with the PEM inline, and must
+not set `DATABASE_SSL_CA_FILE` at all — it takes priority and throws when the
+file is absent.
 
-1. Create a Railway project from this GitHub repository.
-2. Set the service variables:
+### Whichever host
 
-   | Variable | Value |
-   | --- | --- |
-   | `DATABASE_URL` | The Supabase **session pooler** string (`...pooler.supabase.com:5432`). The direct `db.<ref>.supabase.co` host is IPv6-only and is not reachable from Railway. |
-   | `DATABASE_SSL_CA_FILE` | `certs/supabase-root-2021.crt` |
-   | `DATABASE_POOL_MAX` | `10` |
-   | `STRIPE_MODE` | `test` until the client signs off, then `live` |
-   | `STRIPE_SECRET_KEY` | The key matching `STRIPE_MODE` |
-   | `STRIPE_WEBHOOK_SECRET` | Filled in at step 4 |
+1. Run `npm run db:migrate` against the production database.
+2. Create staff accounts with `npm run auth:create-staff`. Never reuse local
+   credentials.
+3. Deploy, then confirm `/api/health` returns
+   `{"status":"ok","database":"connected"}`. That route answers 503 when the
+   database is unreachable, so it catches a bad URL or a mangled certificate
+   before anyone visits the site.
+4. Register `https://<domain>/api/stripe/webhook` in Stripe and subscribe to
+   **`checkout.session.completed`** and **`checkout.session.expired`**. Put that
+   endpoint's signing secret in `STRIPE_WEBHOOK_SECRET` and redeploy — an
+   environment change does not reach a running deployment.
+5. Keep `STRIPE_MODE=test` until the client signs off. Live mode has a different
+   key *and* a different webhook signing secret.
 
-   Do not set `DATABASE_SSL`. Supabase signs its certificates with a private
-   root, so the CA pin above is what makes the connection verify; an override
-   would either break the connection or silently drop server authentication.
-3. Deploy, then generate a public domain for the service.
-4. Register `https://<domain>/api/stripe/webhook` in the Stripe dashboard and
-   put that endpoint's signing secret in `STRIPE_WEBHOOK_SECRET`.
-5. Create staff accounts against the production database with
-   `npm run auth:create-staff`. Do not reuse local credentials.
+Register the webhook against the **stable production domain**. A per-deployment
+URL changes on every push and the webhook would break silently on the next one.
 
-Do not enable Railway's app sleeping. A sleeping service adds a cold start to
-the Stripe webhook, which is the one request that must not be dropped.
+### Vercel specifics
 
-On the Supabase free plan a project is paused after a week of inactivity, which
-takes the site down until someone resumes it by hand. Move the client to
-Supabase Pro before the app carries real payments.
+Cron on the Hobby plan cannot run more than once a day, and a deployment
+carrying a more frequent expression fails to build. `vercel.json` therefore
+schedules `/api/maintenance` daily, which is enough: expired booking holds are
+released inside the query that reads the slot list, so the cron is cleanup
+rather than correctness. Vercel Cron calls its target with GET, which is why
+that route exports both verbs behind the same bearer check, and why
+`MAINTENANCE_SECRET` and `CRON_SECRET` must hold the same value.
+
+Deployment Protection is on by default and answers every request with a redirect
+to a Vercel login. Stripe cannot satisfy that, so webhooks would be rejected at
+the edge before reaching the app. On Hobby the production domain is exempt and
+only per-deployment URLs are protected, so use the production domain; on other
+plans check the setting.
+
+Functions default to `iad1`. Keep the Supabase project in a nearby region — a
+database on another continent costs a round trip on every query, and a page
+makes several.
+
+### Before real payments
+
+- Set `STRIPE_MODE=live` with a rotated live secret and a live webhook secret.
+- Rotate every staff password created for testing.
+- Move the Supabase project off the free plan, which pauses after a week of
+  inactivity and takes the site down until someone resumes it by hand.
+- Configure database backups, ship the JSON logs to an aggregator, and set up
+  uptime monitoring.
+- Add Meta WhatsApp and courier credentials only after the client selects those
+  providers.
 
 ## Documentation
 
@@ -180,6 +216,5 @@ Everything below is tracked in detail in [Implementation status](docs/IMPLEMENTA
 
 - **WhatsApp Cloud API notifications** — see [the plan](docs/WHATSAPP.md); a no-template, no-cost path exists that needs nothing from the client.
 - **Automatic courier tracking** — needs the client's chosen carrier and API. USA operations types the courier and tracking number today.
-- **An automated test suite** — the invoice and payment-split maths are covered only by the smoke scripts above.
 - **A Spanish seller/admin dashboard** — customer screens and the Colombia panel are translated; the USA dashboard is not.
 - **Realtime updates** — the session views poll rather than subscribe.

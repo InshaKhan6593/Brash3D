@@ -154,13 +154,13 @@ Sentry can consume them without code changes; only the destination is missing.
 ## Deliberate Deviations From The Specification
 
 These differ from the written specification on purpose; each is an improvement
-or a consequence of not using Supabase.
+on it.
 
 | Specification | Built instead | Why |
 | --- | --- | --- |
-| Supabase (Postgres + Realtime) | Self-hosted PostgreSQL via `pg` | No vendor dependency; realtime replaced by polling |
+| Supabase Realtime | Polling over `pg` | The app talks to Postgres directly as the table owner. Supabase hosts the database; its Auth and Realtime products are unused |
 | Separate Node/Express backend | Next.js route handlers | One deployable unit |
-| Row Level Security policies (section 8) | Server-side authorization on every route | The spec's policies need an `auth.uid()` no section ever creates; no database key reaches a browser today |
+| Row Level Security policies (section 8) | RLS enabled with no policies, plus server-side authorization on every route | The spec's per-user policies need an `auth.uid()` no section ever creates. Migration 015 instead denies every role that is not the table owner, which closes Supabase's PostgREST endpoint to the publishable key; the route handlers remain the real authorization |
 | Invoice computed in the browser (section 6) | Computed in PostgreSQL | The spec contradicts its own section 3 and would let a browser set any total |
 | Referral dedupe by `reserva_id` (section 12.1) | Dedupe by `referido_id`, plus a monthly cap | The spec's version grants a second reward on a referred customer's second booking |
 | Delivery marked before the charge clears (section 10) | Receipt required, Stripe confirmed by webhook only | The spec would record a declined card as delivered and paid |
