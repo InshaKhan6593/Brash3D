@@ -23,26 +23,26 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { ColombiaCityCombobox } from "@/components/colombia-city-combobox"
+import { DeliveryCityCombobox } from "@/components/delivery-city-combobox"
 import { Separator } from "@/components/ui/separator"
 import { PurchaseHistoryTable } from "@/components/purchase-history-table"
 import { useSession } from "@/lib/hooks/useSession"
-import { COLOMBIA_CITIES } from "@/lib/colombia-cities"
+import { countryFor } from "@/lib/countries"
 import { CustomerPurchaseHistory, EnvioEstado } from "@/lib/types"
 import { finalAmount, initialAmount, isPaidInFullUpFront } from "@/lib/payment-split"
 import { cn, formatCurrency, formatPercent } from "@/lib/utils"
 
-const SHIPMENT_STATUS_ES: Record<EnvioEstado, string> = {
-  preparacion: "en preparación",
-  en_transito: "en tránsito a Colombia",
-  en_aduanas: "en aduanas",
-  recibido_equipo_local: "recibido por el equipo en Colombia",
-  entregado: "entregado",
-  devuelto: "devuelto",
-}
-
-function shipmentStatusLabel(estado: EnvioEstado): string {
-  return SHIPMENT_STATUS_ES[estado]
+// Two of these name the destination country, so the labels are built per
+// customer rather than held in a module-level constant.
+function shipmentStatusLabel(estado: EnvioEstado, country: string): string {
+  return {
+    preparacion: "en preparación",
+    en_transito: `en tránsito a ${country}`,
+    en_aduanas: "en aduanas",
+    recibido_equipo_local: `recibido por el equipo en ${country}`,
+    entregado: "entregado",
+    devuelto: "devuelto",
+  }[estado]
 }
 
 interface TimelineItem {
@@ -145,7 +145,7 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
       { id: "booked", title: "Reserva confirmada", description: "Tu cita con Brash3D está apartada", status: "completed" },
       { id: "shopping", title: "Compra en vivo", description: closed ? "Tu comprador personal cerró la sesión" : "Tu comprador personal está agregando productos", status: closed ? "completed" : "current" },
       { id: "initial", title: "Pago inicial", description: paidInitial ? `${formatCurrency(session.montoPagadoInicial)} recibidos` : "Se paga al cerrar la sesión", status: paidInitial ? "completed" : closed ? "current" : "pending" },
-      { id: "shipping", title: "En camino a Colombia", description: shipped ? "Brash3D está actualizando el estado de tu envío" : "El envío se prepara después del pago inicial", status: delivered ? "completed" : paidInitial ? "current" : "pending" },
+      { id: "shipping", title: `En camino a ${countryFor(session.cliente.pais).name}`, description: shipped ? "Brash3D está actualizando el estado de tu envío" : "El envío se prepara después del pago inicial", status: delivered ? "completed" : paidInitial ? "current" : "pending" },
       { id: "delivery", title: "Entrega y pago final", description: paidFinal ? "Pedido entregado y pagado" : delivered ? "Entrega confirmada" : session.porcentajeInicial >= 100 ? "Ya pagaste el total; solo falta recibir" : "El saldo se cobra al confirmar la entrega", status: paidFinal ? "completed" : delivered ? "current" : "pending" },
     ]
   }, [session])
@@ -183,7 +183,8 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
   const paymentInitial = initialAmount(session.total, session.porcentajeInicial)
   const paymentFinal = finalAmount(session.total, session.porcentajeInicial)
   const paidUpFront = isPaidInFullUpFront(session.porcentajeInicial)
-  const suggestedDeliveryCity = session.deliveryCity || COLOMBIA_CITIES.find((city) =>
+  const country = countryFor(session.cliente.pais)
+  const suggestedDeliveryCity = session.deliveryCity || country.cities.find((city) =>
     city.localeCompare(session.cliente.ciudad || "", "es", { sensitivity: "base" }) === 0
   ) || ""
 
@@ -372,7 +373,7 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
                 <div className="rounded-md bg-muted p-4">
                   <div className="flex items-start justify-between gap-3"><div><p className="font-medium">Pago inicial</p><p className="text-xs text-muted-foreground">{paidUpFront ? "Pago completo al cerrar la sesión" : `${formatPercent(session.porcentajeInicial / 100)} al cerrar la sesión`}</p></div>{hasPaid65 ? <Badge><CheckCircle2 />Pagado</Badge> : <Badge variant="secondary">Pendiente</Badge>}</div>
                   <p className="mt-3 text-2xl font-bold">{formatCurrency(paymentInitial)}</p>
-                  {!isLive && !hasPaid65 && <form className="mt-4 space-y-3" onSubmit={startInitialPayment}><div className="space-y-1.5"><Label htmlFor="delivery-city">Ciudad de entrega en Colombia</Label><ColombiaCityCombobox defaultValue={suggestedDeliveryCity} /><p className="text-[11px] text-muted-foreground">Busca en la lista o escribe otro municipio colombiano.</p></div><div className="space-y-1.5"><Label htmlFor="delivery-address">Dirección completa de entrega</Label><Textarea className="min-h-20 resize-y" id="delivery-address" name="address" defaultValue={session.deliveryAddress || ""} minLength={8} maxLength={500} rows={3} autoComplete="street-address" placeholder="Calle, número, apartamento, barrio y nota de entrega" required /><p className="text-[11px] text-muted-foreground">Incluye apartamento, barrio y un punto de referencia si hace falta.</p></div><p className="text-[11px] text-muted-foreground">El vendedor puede ver esta dirección confirmada pero no puede cambiarla.</p>{paymentError && <p className="text-sm text-destructive">{paymentError}</p>}<Button className="w-full" disabled={!hasProducts || paymentStarting}>{paymentStarting ? "Abriendo pago seguro..." : `Continuar y pagar ${formatCurrency(paymentInitial)}`}</Button></form>}
+                  {!isLive && !hasPaid65 && <form className="mt-4 space-y-3" onSubmit={startInitialPayment}><div className="space-y-1.5"><Label htmlFor="delivery-city">Ciudad de entrega en {country.name}</Label><DeliveryCityCombobox cities={country.cities} defaultValue={suggestedDeliveryCity} /><p className="text-[11px] text-muted-foreground">Busca en la lista o escribe otro municipio {country.adjective}.</p></div><div className="space-y-1.5"><Label htmlFor="delivery-address">Dirección completa de entrega</Label><Textarea className="min-h-20 resize-y" id="delivery-address" name="address" defaultValue={session.deliveryAddress || ""} minLength={8} maxLength={500} rows={3} autoComplete="street-address" placeholder="Calle, número, apartamento, barrio y nota de entrega" required /><p className="text-[11px] text-muted-foreground">Incluye apartamento, barrio y un punto de referencia si hace falta.</p></div><p className="text-[11px] text-muted-foreground">El vendedor puede ver esta dirección confirmada pero no puede cambiarla.</p>{paymentError && <p className="text-sm text-destructive">{paymentError}</p>}<Button className="w-full" disabled={!hasProducts || paymentStarting}>{paymentStarting ? "Abriendo pago seguro..." : `Continuar y pagar ${formatCurrency(paymentInitial)}`}</Button></form>}
                 </div>
                 <div className="rounded-md bg-muted p-4">
                   <div className="flex items-start justify-between gap-3"><div><p className="font-medium">Pago final</p><p className="text-xs text-muted-foreground">{paidUpFront ? "Sin saldo pendiente" : `${formatPercent(1 - session.porcentajeInicial / 100)} contra entrega`}</p></div>{paidUpFront ? <Badge><CheckCircle2 />Pagado por adelantado</Badge> : hasPaid35 ? <Badge><CheckCircle2 />Pagado</Badge> : <Badge variant="secondary">Contra entrega</Badge>}</div>
@@ -385,7 +386,7 @@ export default function CustomerSessionPage({ params }: PageProps<"/session/[id]
             {!isLive && <Card>
               <CardContent className="flex gap-3 py-5">
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10"><MapPin className="size-5" /></span>
-                <div><p className="font-medium">Envío a Colombia</p><p className="text-sm text-muted-foreground">{session.envio ? `Estado actual: ${shipmentStatusLabel(session.envio.estado)}.` : "Los datos de seguimiento aparecen cuando se confirme tu pago inicial y el equipo cree el envío."}</p>{session.envio?.labelCode && <p className="mt-2 text-sm"><span className="text-muted-foreground">Código de envío: </span><span className="font-mono font-semibold">{session.envio.labelCode}</span></p>}</div>
+                <div><p className="font-medium">Envío a {country.name}</p><p className="text-sm text-muted-foreground">{session.envio ? `Estado actual: ${shipmentStatusLabel(session.envio.estado, country.name)}.` : "Los datos de seguimiento aparecen cuando se confirme tu pago inicial y el equipo cree el envío."}</p>{session.envio?.labelCode && <p className="mt-2 text-sm"><span className="text-muted-foreground">Código de envío: </span><span className="font-mono font-semibold">{session.envio.labelCode}</span></p>}</div>
               </CardContent>
             </Card>}
 

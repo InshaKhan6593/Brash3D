@@ -3,7 +3,7 @@ import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { transaction } from "@/lib/db"
 import { listSessions } from "@/lib/store/sessionStore"
-import { listBoxManifests } from "@/lib/store/shippingStore"
+import { getLocalTeam, listBoxManifests } from "@/lib/store/shippingStore"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -11,15 +11,26 @@ export const runtime = "nodejs"
 async function GETHandler() {
   const staff = await requireStaff(["admin", "local_team"])
   if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  const [sessions, boxes] = await Promise.all([
+
+  // A local-team account sees only the boxes addressed to its own team, and the
+  // deliveries inside them. An admin oversees every destination. With one team
+  // the two are the same set; with a second country they are not, and the
+  // difference is one team reading another country's customer addresses and
+  // phone numbers.
+  const scopedTeamId = staff.role === "local_team" ? staff.localTeamId : undefined
+  const [sessions, boxes, team] = await Promise.all([
     listSessions(),
-    listBoxManifests(),
+    listBoxManifests(undefined, scopedTeamId),
+    scopedTeamId ? getLocalTeam(scopedTeamId) : Promise.resolve(null),
   ])
   const visibleBoxes = boxes.filter((box) => box.status === "enviada" || box.status === "recibida")
+  const visibleBoxIds = new Set(visibleBoxes.map((box) => box.id))
   return NextResponse.json({
+    team,
     deliveries: sessions.filter((session) => session.estado === "completada"
       && session.montoPagadoInicial > 0
-      && (session.envio?.estado === "recibido_equipo_local" || session.envio?.estado === "entregado")),
+      && (session.envio?.estado === "recibido_equipo_local" || session.envio?.estado === "entregado")
+      && (!scopedTeamId || (session.envio?.cajaId ? visibleBoxIds.has(session.envio.cajaId) : false))),
     boxes: visibleBoxes,
     incomingBoxes: visibleBoxes.filter((box) => box.status === "enviada"),
     receivedBoxes: visibleBoxes.filter((box) => box.status === "recibida"),

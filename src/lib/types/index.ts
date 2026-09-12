@@ -129,6 +129,7 @@ export interface BoxSettlement {
 export interface ConsolidatedBoxManifest {
   id: string
   number: string
+  teamId: string
   country: string
   courier?: string
   trackingNumber?: string
@@ -199,4 +200,15 @@ export interface SellerSchedule {
   vendedorId: string
   semana: WeekdaySchedule[]
   excepciones: ScheduleException[]
+}
+
+/**
+ * The destination team a local-team panel belongs to. Its name and country are
+ * what that panel labels itself with, so a second country needs no new screen.
+ */
+export interface LocalTeamIdentity {
+  id: string
+  name: string
+  city?: string
+  country: string
 }

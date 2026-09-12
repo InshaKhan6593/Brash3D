@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { CustomerHeader } from "@/components/customer-header"
+import { DEFAULT_COUNTRY } from "@/lib/countries"
 import { TimeSlot } from "@/lib/types"
 
 interface BookingResult {
@@ -134,7 +135,7 @@ export default function Home() {
                   </div>
                   <section id="horarios" className="scroll-mt-20 space-y-3">
                     <div className="flex items-center justify-between gap-3">
-                      <h2 className="text-sm font-medium text-muted-foreground first-letter:uppercase">{new Date(`${activeDate}T12:00:00`).toLocaleDateString("es-CO", { weekday: "long" })}</h2>
+                      <h2 className="text-sm font-medium text-muted-foreground first-letter:uppercase">{new Date(`${activeDate}T12:00:00`).toLocaleDateString(DEFAULT_COUNTRY.locale, { weekday: "long" })}</h2>
                       <span className="text-xs text-muted-foreground">{availableCount} horario{availableCount === 1 ? "" : "s"} disponible{availableCount === 1 ? "" : "s"}</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -168,7 +169,7 @@ export default function Home() {
                 <div className="rounded-md bg-muted p-3 text-sm sm:col-span-2 lg:col-span-1">
                   <p className="font-semibold">Cita seleccionada</p>
                   <p className="text-muted-foreground">
-                    {new Date(`${selectedSlot.date}T12:00:00`).toLocaleDateString("es-CO", { month: "long", day: "numeric" })}, {selectedSlot.time} · {selectedSlot.outlet}
+                    {new Date(`${selectedSlot.date}T12:00:00`).toLocaleDateString(DEFAULT_COUNTRY.locale, { month: "long", day: "numeric" })}, {selectedSlot.time} · {selectedSlot.outlet}
                   </p>
                 </div>
               )}
@@ -182,18 +183,18 @@ export default function Home() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="telefono">Número de WhatsApp</Label>
-                <Input id="telefono" name="telefono" required placeholder="+57 300 123 4567" className="h-9" />
+                <Input id="telefono" name="telefono" required placeholder={DEFAULT_COUNTRY.examplePhone} className="h-9" />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="ciudad">Ciudad</Label>
-                <Input id="ciudad" name="ciudad" required placeholder="Bogotá" className="h-9" />
+                <Input id="ciudad" name="ciudad" required placeholder={DEFAULT_COUNTRY.exampleCity} className="h-9" />
               </div>
               <div className="space-y-2 sm:col-span-2 lg:col-span-1">
                 <Label htmlFor="referralCode">Código de referido <span className="text-muted-foreground">(opcional)</span></Label>
                 <Input id="referralCode" name="referralCode" maxLength={32} placeholder="BR3D-ABC123" className="h-9 uppercase" />
                 <p className="text-xs text-muted-foreground">Una recompensa válida cubre los 20 USD de esta reserva.</p>
               </div>
-              <div className="flex items-start gap-2.5 rounded-md border p-3 sm:col-span-2 lg:col-span-1">
+              {DEFAULT_COUNTRY.localInvoice && <div className="flex items-start gap-2.5 rounded-md border p-3 sm:col-span-2 lg:col-span-1">
                 <Checkbox
                   id="requiresLocalInvoice"
                   checked={requiresLocalInvoice}
@@ -202,13 +203,13 @@ export default function Home() {
                 />
                 <div className="space-y-1">
                   <Label htmlFor="requiresLocalInvoice" className="font-normal leading-snug">
-                    Necesito factura local de Brash3D SAS (Colombia)
+                    Necesito factura local de {DEFAULT_COUNTRY.localInvoice.entity}
                   </Label>
                   <p className="text-xs text-muted-foreground">
-                    Marca esta casilla solo si necesitas deducir la compra en Colombia. El equipo la emite manualmente.
+                    {DEFAULT_COUNTRY.localInvoice.reason}
                   </p>
                 </div>
-              </div>
+              </div>}
               {error && <p className="text-sm text-destructive sm:col-span-2 lg:col-span-1">{error}</p>}
               {!selectedSlotId && (
                 <button

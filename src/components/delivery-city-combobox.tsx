@@ -3,22 +3,21 @@
 import { KeyboardEvent, useId, useMemo, useState } from "react"
 import { ChevronDown } from "lucide-react"
 import { Input } from "@/components/ui/input"
-import { COLOMBIA_CITIES } from "@/lib/colombia-cities"
 import { cn } from "@/lib/utils"
 
 function normalize(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
 }
 
-export function ColombiaCityCombobox({ defaultValue = "" }: { defaultValue?: string }) {
+export function DeliveryCityCombobox({ cities, defaultValue = "" }: { cities: readonly string[]; defaultValue?: string }) {
   const listId = useId()
   const [value, setValue] = useState(defaultValue)
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(0)
   const options = useMemo(() => {
     const search = normalize(value.trim())
-    return COLOMBIA_CITIES.filter((city) => !search || normalize(city).includes(search)).slice(0, 6)
-  }, [value])
+    return cities.filter((city) => !search || normalize(city).includes(search)).slice(0, 6)
+  }, [cities, value])
 
   function choose(city: string) {
     setValue(city)

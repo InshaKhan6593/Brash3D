@@ -10,7 +10,7 @@ import { ModeToggle } from "@/components/mode-toggle"
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import type { BoxSettlement, ConsolidatedBoxManifest, SesionCompra } from "@/lib/types"
+import type { BoxSettlement, ConsolidatedBoxManifest, LocalTeamIdentity, SesionCompra } from "@/lib/types"
 import { outstandingBalance } from "@/lib/payment-split"
 import { formatCurrency, formatDateTimeEs } from "@/lib/utils"
 
@@ -66,9 +66,10 @@ function boxStatusLabel(status: string): string {
 }
 
 // Section 13 of the specification: Stripe collections are US LLC revenue, cash
-// and transfers stay in Colombia as the local team's operating fund. This is
-// accounting metadata only — the system never moves money between entities.
-function BoxSettlementSummary({ settlement }: { settlement: BoxSettlement }) {
+// and transfers stay in the destination country as the local team's operating
+// fund. This is accounting metadata only — the system never moves money between
+// entities.
+function BoxSettlementSummary({ settlement, country }: { settlement: BoxSettlement; country: string }) {
   const rows = [
     {
       key: "stripe",
@@ -81,7 +82,7 @@ function BoxSettlementSummary({ settlement }: { settlement: BoxSettlement }) {
     {
       key: "local",
       icon: Wallet,
-      label: "fondo local Colombia",
+      label: `fondo local ${country}`,
       hint: settlement.transfer > 0
         ? `${formatCurrency(settlement.cash)} efectivo · ${formatCurrency(settlement.transfer)} transferencia`
         : "efectivo recibido por el equipo",
@@ -144,7 +145,7 @@ function BoxSettlementSummary({ settlement }: { settlement: BoxSettlement }) {
   )
 }
 
-function ReceiveBoxDialog({ boxNumber, onConfirm }: { boxNumber: string; onConfirm: () => Promise<void> }) {
+function ReceiveBoxDialog({ boxNumber, country, onConfirm }: { boxNumber: string; country: string; onConfirm: () => Promise<void> }) {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
@@ -165,7 +166,7 @@ function ReceiveBoxDialog({ boxNumber, onConfirm }: { boxNumber: string; onConfi
   return <Dialog open={open} onOpenChange={(nextOpen) => { setOpen(nextOpen); if (!nextOpen) setError("") }}>
     <DialogTrigger asChild><Button size="sm">Confirmar recepción</Button></DialogTrigger>
     <DialogContent className="sm:max-w-lg">
-      <DialogHeader><DialogTitle>¿Marcar {boxNumber} como recibida?</DialogTitle><DialogDescription>Confirma que la caja consolidada llegó físicamente a Colombia. Sus paquetes pasarán a la fila de entregas locales.</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>¿Marcar {boxNumber} como recibida?</DialogTitle><DialogDescription>Confirma que la caja consolidada llegó físicamente a {country}. Sus paquetes pasarán a la fila de entregas locales.</DialogDescription></DialogHeader>
       <div className="rounded-md bg-muted p-3 text-sm text-muted-foreground">Revisa las etiquetas y el número de paquetes antes de confirmar la recepción.</div>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={saving}>Cancelar</Button><Button type="button" onClick={() => void confirm()} disabled={saving}>{saving ? "Confirmando…" : "Sí, caja recibida"}</Button></DialogFooter>
@@ -200,11 +201,11 @@ function BoxDetails({ box, onReceive }: { box: ConsolidatedBoxManifest; onReceiv
         </div>)}
       </div>
 
-      <BoxSettlementSummary settlement={box.settlement} />
+      <BoxSettlementSummary settlement={box.settlement} country={box.country} />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-muted-foreground">Creada {formatDateTimeEs(box.createdAt)}{box.receivedAt ? ` · Recibida ${formatDateTimeEs(box.receivedAt)}` : " · Revisa las etiquetas antes de entregar."}</p>
-        {box.status === "enviada" && onReceive ? <ReceiveBoxDialog boxNumber={box.number} onConfirm={onReceive} /> : <Badge><CheckCircle2 />Recibida por el equipo local</Badge>}
+        {box.status === "enviada" && onReceive ? <ReceiveBoxDialog boxNumber={box.number} country={box.country} onConfirm={onReceive} /> : <Badge><CheckCircle2 />Recibida por el equipo local</Badge>}
       </div>
     </div>
   </details>
@@ -255,6 +256,7 @@ function DeliveryDetailsSheet({ session, boxNumber, onOpenChange, onStripe, onOf
 }
 
 export function LocalTeamPanel() {
+  const [team, setTeam] = useState<LocalTeamIdentity | null>(null)
   const [deliveries, setDeliveries] = useState<SesionCompra[]>([])
   const [incomingBoxes, setIncomingBoxes] = useState<ConsolidatedBoxManifest[]>([])
   const [receivedBoxes, setReceivedBoxes] = useState<ConsolidatedBoxManifest[]>([])
@@ -266,8 +268,9 @@ export function LocalTeamPanel() {
   const refresh = useCallback(async () => {
     const response = await fetch("/api/local-team", { cache: "no-store" })
     if (!response.ok) return
-    const data = await response.json() as { deliveries: SesionCompra[]; boxes?: ConsolidatedBoxManifest[]; incomingBoxes?: ConsolidatedBoxManifest[]; receivedBoxes?: ConsolidatedBoxManifest[] }
+    const data = await response.json() as { team?: LocalTeamIdentity | null; deliveries: SesionCompra[]; boxes?: ConsolidatedBoxManifest[]; incomingBoxes?: ConsolidatedBoxManifest[]; receivedBoxes?: ConsolidatedBoxManifest[] }
     const allBoxes = data.boxes || []
+    setTeam(data.team || null)
     setDeliveries(data.deliveries)
     setIncomingBoxes(data.incomingBoxes || allBoxes.filter((box) => box.status === "enviada"))
     setReceivedBoxes(data.receivedBoxes || allBoxes.filter((box) => box.status === "recibida"))
@@ -319,7 +322,7 @@ export function LocalTeamPanel() {
   const counts = deliveryFilters.reduce<Record<DeliveryFilter, number>>((result, item) => { result[item.value] = item.value === "all" ? deliveries.length : deliveries.filter((session) => deliveryFilterFor(session) === item.value).length; return result }, { all: 0, awaiting_payment: 0, ready_for_handover: 0, delivered: 0 })
 
   return <div className="min-h-screen bg-muted/30">
-    <header className="border-b bg-background"><div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 lg:px-8"><div className="min-w-0"><p className="truncate text-sm text-muted-foreground">Brash3D SAS Colombia</p><h1 className="text-xl font-bold sm:text-2xl">Panel del equipo local</h1></div><div className="flex shrink-0 items-center gap-2"><ModeToggle /><Button variant="outline" onClick={() => void logout()}><LogOut />Cerrar sesión</Button></div></div></header>
+    <header className="border-b bg-background"><div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 lg:px-8"><div className="min-w-0"><p className="truncate text-sm text-muted-foreground">{team?.name || "Brash3D"}</p><h1 className="text-xl font-bold sm:text-2xl">Panel del equipo local</h1></div><div className="flex shrink-0 items-center gap-2"><ModeToggle /><Button variant="outline" onClick={() => void logout()}><LogOut />Cerrar sesión</Button></div></div></header>
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 lg:px-8">
       {message && <Alert><Clipboard /><AlertTitle>Actualización de operaciones</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>}
       <div className="flex flex-wrap gap-2 border-b pb-3"><Button variant={view === "incoming" ? "default" : "outline"} onClick={() => setView("incoming")}><PackageCheck />Cajas en camino <span className="ml-1 opacity-70">{incomingBoxes.length}</span></Button><Button variant={view === "received" ? "default" : "outline"} onClick={() => setView("received")}><CheckCircle2 />Cajas recibidas <span className="ml-1 opacity-70">{receivedBoxes.length}</span></Button><Button variant={view === "deliveries" ? "default" : "outline"} onClick={() => setView("deliveries")}>Entregas a clientes <span className="ml-1 opacity-70">{deliveries.length}</span></Button></div>

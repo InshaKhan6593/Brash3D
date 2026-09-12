@@ -8,6 +8,7 @@ import {
   getBooking,
 } from "@/lib/store/sessionStore"
 import { getStripe } from "@/lib/stripe"
+import { DEFAULT_COUNTRY } from "@/lib/countries"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -44,7 +45,7 @@ async function POSTHandler(request: Request) {
     email,
     telefono: phone,
     ciudad: city,
-    pais: typeof body.pais === "string" && body.pais ? body.pais : "Colombia",
+    pais: typeof body.pais === "string" && body.pais ? body.pais : DEFAULT_COUNTRY.name,
     referralCode,
     requiresLocalInvoice: body.requiresLocalInvoice === true,
   }

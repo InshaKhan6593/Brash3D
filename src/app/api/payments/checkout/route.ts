@@ -6,6 +6,7 @@ import { query } from "@/lib/db"
 import { attachSessionCheckout, clearSessionCheckout } from "@/lib/store/sessionStore"
 import { finalAmount, initialAmount, isPaidInFullUpFront } from "@/lib/payment-split"
 import { getStripe } from "@/lib/stripe"
+import { DEFAULT_COUNTRY } from "@/lib/countries"
 
 export const runtime = "nodejs"
 
@@ -22,7 +23,7 @@ async function POSTHandler(request: Request) {
   if (stage === "inicial") {
     if (!await verifyCustomerAccess(sessionId, null)) return NextResponse.json({ error: "Session not found" }, { status: 404 })
     if (address.length < 8 || address.length > 500 || city.length < 2 || city.length > 100) {
-      return NextResponse.json({ error: "Escribe una direccion de entrega completa y tu ciudad en Colombia." }, { status: 400 })
+      return NextResponse.json({ error: `Escribe una direccion de entrega completa y tu ciudad en ${DEFAULT_COUNTRY.name}.` }, { status: 400 })
     }
   } else {
     const staff = await requireStaff(["admin", "local_team"])
