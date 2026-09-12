@@ -160,19 +160,29 @@ discovered during it.
 **Specification, §1 and §2** call for Supabase (Postgres + Realtime), with the
 schema run in the Supabase SQL editor.
 
-**Current state:** self-hosted PostgreSQL with the same schema, driven by
-thirteen tracked migrations. The session views poll every 1.5 seconds instead of
-subscribing.
+**Current state: the database is hosted on Supabase** (`us-east-1`, accessed
+through the pooler), with all sixteen tracked migrations applied and row level
+security enabled on every public table. Docker Compose still serves local
+development and the test suite. What remains unused is Supabase's *products*:
+the app connects over `pg` as the table owner, so Auth and Realtime are not in
+play and no key of any kind reaches a browser. The session views still poll
+every 1.5 seconds.
 
 **Agreed direction — Supabase Postgres and Realtime, with server-authoritative
 writes.** This gives the client everything section 1 asked for without inheriting
 contradiction 1:
 
-- Host the database on Supabase (§1, §2)
+- Host the database on Supabase (§1, §2) — **done**
+- RLS on customer-readable tables as defence in depth (§8, §14) — **done as a
+  deny-all floor** in migration 015; per-customer policies wait on the identity
+  below
 - Subscribe read-only to the customer's cart via Realtime, replacing polling (§7)
 - Supabase Auth magic links to create the `auth.uid()` that RLS needs (resolves 2)
-- RLS on customer-readable tables as defence in depth (§8, §14)
 - **Every write stays on the server**, so the invoice can never be set from a browser
+
+The last two are a pair, and both wait on the client decision recorded in 2
+above: a customer would begin receiving a Supabase authentication email in place
+of today's secure link.
 
 ### Migration readiness
 
@@ -183,12 +193,35 @@ migration runner now drops that pre-created publication **only when the target
 database is completely empty** — no `clientes` table and no `schema_migrations`
 rows — leaving existing databases and their recorded checksums untouched.
 Verified against a database seeded to imitate a fresh Supabase project: 001
-failed before the fix, all thirteen migrations applied after it.
+failed before the fix, every migration applied after it.
 
-Connecting also requires TLS. `pg` reads `sslmode` straight from the connection
-string, so no code change is needed — use `?sslmode=verify-full`. Prefer the
-pooler endpoint (port 6543) over a direct connection, and lower
-`DATABASE_POOL_MAX` to match the project's connection limit.
+Connecting also requires TLS, and two details of it were wrong when this was
+first written.
+
+**`sslmode` in the connection string does nothing here.** `pg` only reads it
+when no `ssl` option is passed, and `src/lib/db-ssl.mjs` always passes one, so
+`?sslmode=verify-full` is inert. TLS is decided by that module: a local host
+connects in the clear, every other host verifies.
+
+**Verifying against the system trust store fails.** Supabase signs database
+certificates with its own private root, which no system store carries, so
+verification stops at `SELF_SIGNED_CERT_IN_CHAIN`. The root is committed at
+`certs/supabase-root-2021.crt` (valid to April 2031) and pinned through
+`DATABASE_SSL_CA_FILE`, or `DATABASE_SSL_CA` with the PEM inline where a host
+takes only environment values. `DATABASE_SSL=no-verify` would encrypt without
+authenticating the server, on the connection that carries payment records.
+
+**Which pooler port depends on the host.** Port 5432 leases a connection for a
+whole session and suits a long-running host; 6543 leases it per transaction and
+suits a serverless one, where every concurrent instance pools separately and
+`DATABASE_POOL_MAX` should be 1. This project has no direct-connection option to
+weigh against them: `db.<ref>.supabase.co` no longer resolves, since Supabase
+withdrew dedicated IPv4 addresses from free projects. Nothing in the codebase
+holds a session-level setting, an advisory lock or a named prepared statement,
+so transaction pooling is safe.
+
+`npm run db:check` verifies all of this against whatever `DATABASE_URL` points
+at, without writing anything.
 
 ---
 

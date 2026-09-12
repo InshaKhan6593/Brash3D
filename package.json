@@ -11,6 +11,7 @@
     "start": "next start",
     "lint": "eslint",
     "db:migrate": "node scripts/migrate.mjs",
+    "db:check": "node scripts/db-check.mjs",
     "auth:create-staff": "node scripts/create-staff.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
     "test": "vitest run",

@@ -158,11 +158,24 @@ DATABASE_POOL_MAX=10
 
 Use the **session** pooler (port 5432) for a long-running host and the
 **transaction** pooler (port 6543) for a serverless one, where every concurrent
-instance opens its own connection. `sslmode` in the URL is ignored: TLS comes
-from `src/lib/db-ssl.mjs`, and Supabase signs its certificates with a private
-root that no system trust store carries, so the CA above must be supplied.
-`DATABASE_SSL_CA` carries the same PEM inline for hosts that expose only
-environment values.
+instance opens its own connection. The pooler is the only way in: free projects
+no longer get a dedicated IPv4 address, so `db.<ref>.supabase.co` does not
+resolve. `sslmode` in the URL is ignored: TLS comes from `src/lib/db-ssl.mjs`,
+and Supabase signs its certificates with a private root that no system trust
+store carries, so the CA above must be supplied. `DATABASE_SSL_CA` carries the
+same PEM inline for hosts that expose only environment values, with the line
+breaks written either literally or as `\n`.
+
+Check the result at any time — it connects, reads, and writes nothing:
+
+```bash
+npm run db:check
+```
+
+It reports the TLS configuration in use, any migration on disk the database has
+not applied, any migration file edited since it was applied, a public table
+without row level security, and any privilege `anon` or `authenticated` still
+holds. It exits non-zero on a failure, so it can gate a deploy.
 
 Then `npm run db:migrate`. The runner drops the `supabase_realtime` publication
 that every Supabase project pre-creates, but only when the target database is
@@ -212,7 +225,8 @@ file is absent.
 
 ### Whichever host
 
-1. Run `npm run db:migrate` against the production database.
+1. Run `npm run db:migrate` against the production database, then
+   `npm run db:check` to confirm what it applied.
 2. Create staff accounts with `npm run auth:create-staff`. Never reuse local
    credentials.
 3. Deploy, then confirm `/api/health` returns

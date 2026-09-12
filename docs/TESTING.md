@@ -16,6 +16,14 @@ because the invoice and payment-split logic is SQL, so it needs
 `docker compose up -d` and `npm run db:migrate` first. Without them those files
 fail with `ECONNREFUSED 127.0.0.1:5440` while the pure-logic tests still pass.
 
+**That address is the point, not an oversight.** The store tests create and
+delete rows, and `DATABASE_URL` in `.env.local` points at the hosted Supabase
+database. Next's env loader deliberately skips `.env.local` when `NODE_ENV` is
+`test`, so the suite never sees that URL and falls back to the local container
+in `src/lib/db.ts`. Do not "fix" the connection error by exporting a hosted
+`DATABASE_URL`: the fixtures would be created and dropped in the real database.
+Start Docker instead.
+
 With the local development server running, execute the database-backed smoke tests:
 
 ```bash

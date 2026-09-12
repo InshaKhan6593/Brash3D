@@ -42,10 +42,21 @@ is shared by both and takes a `locale` prop rather than hard-coding its copy.
 
 ## Access Control
 
-Row Level Security from section 8 of the specification does not apply here. That
-section protects a Supabase anon key held by the browser; this application never
-exposes a database key to any client. Every query runs server-side behind the
-route handlers below, which authorize each request before touching PostgreSQL.
+Every query runs server-side behind the route handlers below, which authorize
+each request before touching PostgreSQL. The application connects as the table
+owner and never exposes a database key to any client.
+
+Row Level Security is nevertheless enabled on every public table, with no
+policies (migration 015). That is not what section 8 of the specification asked
+for — its policies protect an anon key held by the browser, which this
+application does not use — but the database is hosted on Supabase, and Supabase
+serves PostgREST over the `public` schema to anyone holding the publishable key
+whether or not the app touches supabase-js. RLS with no policies denies every
+role except the owner, which closes that endpoint. Authorization in the route
+handlers remains the real control; this is the floor beneath it.
+
+A migration that adds a table must enable RLS on it explicitly. `npm run
+db:check` fails if one does not.
 
 
 - Staff authenticate through `/login`; database-backed sessions use random tokens stored only as SHA-256 hashes.

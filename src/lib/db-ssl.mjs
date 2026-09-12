@@ -80,5 +80,29 @@ function caConfig() {
   }
 
   const ca = process.env.DATABASE_SSL_CA
-  return ca ? { rejectUnauthorized: true, ca } : { rejectUnauthorized: true }
+  return ca ? { rejectUnauthorized: true, ca: normalizePem(ca) } : { rejectUnauthorized: true }
+}
+
+/**
+ * A PEM is multi-line, and the places that carry `DATABASE_SSL_CA` mostly are
+ * not: a `.env` file, a CI secret and a dashboard field all tend to arrive with
+ * the line breaks escaped as a literal backslash-n. Node's TLS stack does not
+ * parse that — it reports no usable certificate, which then surfaces as the
+ * same SELF_SIGNED_CERT_IN_CHAIN a missing CA gives, sending whoever debugs it
+ * looking in the wrong place.
+ *
+ * The check for a BEGIN marker catches the other half of that failure, a paste
+ * truncated by a field length limit, while the value is still identifiable.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function normalizePem(value) {
+  const pem = value.includes("\\n") ? value.replace(/\\n/g, "\n") : value
+
+  if (!pem.includes("-----BEGIN CERTIFICATE-----")) {
+    throw new Error("DATABASE_SSL_CA does not contain a PEM certificate. Supply the full certs/supabase-root-2021.crt contents, BEGIN and END lines included.")
+  }
+
+  return pem
 }
