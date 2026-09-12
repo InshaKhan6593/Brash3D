@@ -6,9 +6,15 @@ Run all checks before committing changes:
 
 ```bash
 npm run lint
+npm test
 npm run build
 npm audit --omit=dev
 ```
+
+`npm test` is the Vitest suite. Part of it runs against a real PostgreSQL,
+because the invoice and payment-split logic is SQL, so it needs
+`docker compose up -d` and `npm run db:migrate` first. Without them those files
+fail with `ECONNREFUSED 127.0.0.1:5440` while the pure-logic tests still pass.
 
 With the local development server running, execute the database-backed smoke tests:
 
@@ -16,10 +22,40 @@ With the local development server running, execute the database-backed smoke tes
 npm run test:smoke
 node scripts/referral-smoke-test.mjs
 node scripts/referral-webhook-smoke-test.mjs
+SEED_ADMIN_PASSWORD='<admin password>' SEED_SELLER_PASSWORD='<seller password>' \
+  node scripts/session-contract-smoke-test.mjs
 ```
 
-Each script removes the records it creates. There is no unit-test suite yet, so
-these scripts plus the manual passes below are the whole safety net.
+Each script removes the records it creates. Together with the Vitest suite and
+the manual passes below, these are the whole safety net.
+
+### API contract checks
+
+`session-contract-smoke-test.mjs` covers what neither the Vitest suite nor a
+manual pass can reach. Vitest calls functions directly and never sees a status
+code; the panels gate their own UI so some API states are unreachable by
+clicking. The script asserts the responses of `POST /api/sessions`,
+`POST /api/payments/checkout` and `POST /api/local-team` over HTTP.
+
+Its headline assertion is the money guard: `confirmDeliveryWithoutBalance` must
+refuse an order that still owes money. That is the whole reason the endpoint is
+separate from ordinary delivery confirmation, and it is asserted in both
+directions — 409 with a balance, 200 for an order paid 100% up front.
+
+It needs the workflow states a live order passes through. If it reports missing
+fixtures, create them and then remove them afterwards:
+
+```bash
+SEED_ADMIN_PASSWORD='<admin password>' node scripts/seed-test-fixtures.mjs
+node scripts/cleanup-test-fixtures.mjs            # dry run
+node scripts/cleanup-test-fixtures.mjs --apply    # delete
+```
+
+The seeder drives the real API for every step and writes SQL only for the two
+Stripe-webhook confirmations, which cannot be forged from a script. It writes
+payment rows that no money backs, so point it only at a demo database. See
+`README.md` for the detail, including what the cleanup deliberately leaves
+behind.
 
 For local Stripe events, run `stripe login`, then:
 
