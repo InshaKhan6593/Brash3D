@@ -133,7 +133,34 @@ seller tabs, all three Colombia views and the customer screens.
 
 ## Remaining
 
-### 1. WhatsApp Cloud API notifications
+### 1. Nothing reaches the customer automatically
+The single biggest functional gap, and the one the client's own designs assume
+is closed. Screen 3 of the design document says: "After payment, the customer
+receives the WhatsApp video call link."
+
+They do not. There is no outbound messaging of any kind in the codebase -- no
+WhatsApp, no email, no SMS. After paying the booking fee the customer is
+redirected to their order page, and that browser tab is their only copy of it.
+If they close it, the seller has to copy the link and send it by hand, which
+makes the seller a required step in every booking.
+
+The link itself is now ready to be sent: it carries its own access token, works
+on any device, and stays valid for 90 days (see "Customer order links"). That
+was the prerequisite -- emailing a link that only worked in one browser profile
+would have been worse than not sending one.
+
+Two independent pieces of work:
+
+- **A booking confirmation email.** Needs an email provider and nothing from
+  Meta. Closes the gap on its own and is the smaller job.
+- **WhatsApp Cloud API** (specification 7.1), which also asks for a text echo of
+  each product as the seller adds it. See
+  [WhatsApp integration plan](WHATSAPP.md): a no-template, no-cost path exists
+  that needs nothing from the client to build or demo. Proactive status pushes
+  need a Meta business account, Business Verification, phone-number ID, access
+  token and verify token.
+
+### 2. WhatsApp Cloud API notifications
 Specification section 7.1 asks for a WhatsApp text echo of each product as the
 seller adds it. None of this is built; the WhatsApp references in the UI are
 icons and links only.
@@ -149,13 +176,13 @@ Needs from the client only if proactive status pushes are wanted: a Meta
 business account, Business Verification, phone-number ID, access token and
 verify token.
 
-### 2. Automatic courier tracking — blocked on carrier selection
+### 3. Automatic courier tracking — blocked on carrier selection
 Specification section 10 suggests routing a courier's "delivered" webhook into
 delivery confirmation. Today USA operations types the courier and tracking
 number when dispatching a box, and Colombia confirms delivery by hand. Needs the
 client's chosen carrier and API credentials.
 
-### 3. Seller/admin dashboard is still English-only
+### 4. Seller/admin dashboard is still English-only
 The client's mockup for the seller panel is in Spanish. The USA seller/admin
 dashboard is the one surface with no Spanish, because the seller is Miami-based.
 
@@ -169,24 +196,24 @@ change, but it needs no new mechanism.
 
 Still a product decision for the client: whether the Miami seller wants it.
 
-### 4. Polling instead of realtime
+### 5. Polling instead of realtime
 The specification assumed Supabase Realtime. The customer and seller session
 views poll every 1.5 seconds and the Colombia panel every 5 seconds. This is
 correct but chatty: each open session page issues about 40 requests per minute.
 PostgreSQL `LISTEN`/`NOTIFY` behind Server-Sent Events is the natural upgrade
 before many sessions run concurrently.
 
-### 5. Query efficiency in the operations panels
+### 6. Query efficiency in the operations panels
 `listBoxManifests` calls `listSessions()` and filters in JavaScript, and
 `/api/local-team` invokes that pair on every 5-second poll. Fine at current data
 volumes, worth scoping to the relevant sessions as history grows.
 
-### 6. Supabase Auth and Realtime
+### 7. Supabase Auth and Realtime
 The database is now hosted on Supabase, and row level security is enabled and
 verified (see Production hardening) — the deny-by-default floor is in place.
 
 Not yet built: Supabase Auth magic links for customers, per-customer RLS read
-policies, and read-only Realtime subscriptions replacing the polling in item 4.
+policies, and read-only Realtime subscriptions replacing the polling in item 5.
 These three ship together and only become necessary together. Today no anon key
 has a path to the data, so the deny-everything floor is the correct posture;
 giving the browser a Realtime subscription is what would require the policies,
@@ -195,7 +222,7 @@ resolve — which specification section 8 assumes but never creates. Writes stay
 server-side regardless. Requires client sign-off on customers receiving a
 Supabase authentication email.
 
-### 7. Deployment configuration
+### 8. Deployment configuration
 Mostly done. The app is deployed on Vercel at `https://brash3-d.vercel.app`, the
 database is hosted on Supabase (`us-east-1`, pooler, TLS pinned to
 `certs/supabase-root-2021.crt`), and the Stripe webhook is registered against the
@@ -209,7 +236,7 @@ which is what the two `hold_expired` cancellations from 11 September are.
 Still outstanding at deployment:
 
 - Staff passwords created for testing are still in place and must be rotated.
-- No error-tracking destination (item 8).
+- No error-tracking destination (item 9).
 - The Supabase project is on the free plan, which pauses after a week of
   inactivity and takes the site down until somebody resumes it by hand.
 - Stripe stays in test mode until the client is ready to go live. Live mode
@@ -220,7 +247,7 @@ Still outstanding at deployment:
 
 See the production checklist in `README.md`.
 
-### 8. Error tracking destination
+### 9. Error tracking destination
 Structured logs are emitted but nothing aggregates or alerts on them yet.
 Whatever the host provides (Vercel log drains, CloudWatch) or a tracker such as
 Sentry can consume them without code changes; only the destination is missing.

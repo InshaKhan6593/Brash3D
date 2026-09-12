@@ -134,11 +134,40 @@ try {
      WHERE table_schema = 'public' AND grantee IN ('anon', 'authenticated')
      GROUP BY 1, 2 ORDER BY 1, 2
   `)
-  report(
-    grants.rowCount === 0,
-    "anon privileges revoked",
-    grants.rowCount ? grants.rows.map((row) => `${row.grantee} has ${row.privileges} on ${row.table_name}`).join("; ") : "anon and authenticated hold nothing"
+  // Exactly three SELECT grants are expected, and only for `authenticated`:
+  // the tables a customer subscribes to over Realtime (migration 018). They are
+  // pinned rather than waved through, because the whole protection is the RLS
+  // policy beside each one -- a grant that appeared without its policy, or on a
+  // table not listed here, would expose rows to anyone holding the publishable
+  // key. `anon` must still hold nothing at all.
+  const REALTIME_READ_GRANTS = new Map([
+    ["sesiones_compra", "SELECT"],
+    ["productos_carrito", "SELECT"],
+    ["envios", "SELECT"],
+  ])
+  const unexpectedGrants = grants.rows.filter((row) =>
+    row.grantee !== "authenticated"
+    || REALTIME_READ_GRANTS.get(row.table_name) !== row.privileges
   )
+  report(
+    unexpectedGrants.length === 0,
+    "table privileges",
+    unexpectedGrants.length
+      ? unexpectedGrants.map((row) => `${row.grantee} has ${row.privileges} on ${row.table_name}`).join("; ")
+      : grants.rowCount
+        ? `anon holds nothing; authenticated may SELECT ${grants.rowCount} realtime table(s), each behind an RLS policy`
+        : "anon and authenticated hold nothing"
+  )
+
+  // A granted table with no policy is readable by every authenticated token,
+  // which is the failure this pairing exists to prevent.
+  const grantedWithoutPolicy = grants.rows.filter((row) =>
+    (tables.rows.find((table) => table.relname === row.table_name)?.policies ?? 0) === 0
+  )
+  if (grantedWithoutPolicy.length) {
+    report(false, "realtime grants carry policies",
+      grantedWithoutPolicy.map((row) => `${row.table_name} is granted but has no RLS policy`).join("; "))
+  }
 
   const policied = tables.rows.filter((row) => row.policies > 0)
   if (policied.length) {

@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useRealtimeSession } from "@/lib/realtime/useRealtimeSession"
 import { EnvioEstado, Producto, SesionCompra } from "@/lib/types"
 
 /**
@@ -46,7 +47,7 @@ interface UseSessionReturn {
 export function useSession(
   sessionId: string | null,
   accessToken?: string | null,
-  options?: { recoverToken?: boolean }
+  options?: { recoverToken?: boolean; realtime?: boolean }
 ): UseSessionReturn {
   const [session, setSession] = useState<SesionCompra | null>(null)
   const [loading, setLoading] = useState(Boolean(sessionId))
@@ -116,16 +117,28 @@ export function useSession(
     }
   }, [activeToken, recoverToken, sessionId])
 
+  // Push, when it is available. `connected` is false until the socket is live
+  // and false again the moment it drops, so the poll below covers every gap.
+  const { connected } = useRealtimeSession(
+    options?.realtime ? sessionId : null,
+    activeToken ?? null,
+    refresh
+  )
+
   useEffect(() => {
     if (!sessionId) return
 
+    // 1.5s is what a live cart needs when polling is the only signal. With the
+    // socket live it becomes a safety net for a connection that died quietly,
+    // which cuts an idle order page from ~40 requests a minute to two.
+    const period = connected ? 30_000 : 1_500
     const initialLoad = window.setTimeout(() => void refresh(), 0)
-    const interval = window.setInterval(() => void refresh(), 1500)
+    const interval = window.setInterval(() => void refresh(), period)
     return () => {
       window.clearTimeout(initialLoad)
       window.clearInterval(interval)
     }
-  }, [refresh, sessionId])
+  }, [connected, refresh, sessionId])
 
   const mutate = useCallback(async (action: string, data: Record<string, unknown>) => {
     if (!sessionId) throw new Error("Missing session ID")

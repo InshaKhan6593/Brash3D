@@ -118,7 +118,7 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
   const { locale, t } = useLocale()
   // recoverToken: this is the one screen with a customer cookie to fall back
   // on, and the one that needs the token in the address bar.
-  const { session, loading, error, pay, recoveredToken } = useSession(id, urlToken, { recoverToken: true })
+  const { session, loading, error, pay, recoveredToken } = useSession(id, urlToken, { recoverToken: true, realtime: true })
   const [now, setNow] = useState(() => Date.now())
   const [paymentError, setPaymentError] = useState("")
   const [paymentStarting, setPaymentStarting] = useState(false)
