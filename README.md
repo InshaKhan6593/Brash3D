@@ -200,6 +200,9 @@ call sites.
 
 ## Deploying
 
+**Currently deployed:** Vercel at `https://brash3-d.vercel.app`, database on
+Supabase, Stripe in test mode with the webhook registered against that domain.
+
 The app is one deployable unit and the database stays on Supabase, so a
 deployment is a single service. Two hosts are configured in the repository and
 neither interferes with the other: Vercel ignores `railway.json`, Railway
@@ -237,8 +240,20 @@ file is absent.
    **`checkout.session.completed`** and **`checkout.session.expired`**. Put that
    endpoint's signing secret in `STRIPE_WEBHOOK_SECRET` and redeploy — an
    environment change does not reach a running deployment.
-5. Keep `STRIPE_MODE=test` until the client signs off. Live mode has a different
-   key *and* a different webhook signing secret.
+
+   This step is not optional and its absence is silent. The `whsec_…` printed by
+   `stripe listen` belongs to a tunnel to your own machine and is useless in
+   production. Without a registered endpoint the customer still pays, still gets
+   redirected back, and Stripe still holds the money — but no event ever reaches
+   the app, so the booking is never confirmed, the 15-minute hold expires and the
+   slot is released. Nothing anywhere reports an error.
+5. Prove it with one booking on the deployed site using test card
+   `4242 4242 4242 4242`. The reservation should reach `confirmada` within
+   seconds, with a `booking_fee` row in `payment_logs` and the event recorded in
+   `stripe_webhook_events`.
+6. Keep `STRIPE_MODE=test` until the client signs off. Live mode has a different
+   key *and* a different webhook signing secret, and needs its own endpoint
+   registered — nothing carries over from test.
 
 Register the webhook against the **stable production domain**. A per-deployment
 URL changes on every push and the webhook would break silently on the next one.

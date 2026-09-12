@@ -49,6 +49,7 @@ designs and the 14-section technical specification).
 - Slot listing runs as one database round trip instead of three. Server-side each statement takes under 4 ms, but every statement costs a full network round trip to a managed database — about 160 ms to the Tokyo region — so the public booking page spent most of a second waiting on the network. Generating missing slots, releasing expired holds and reading the list now travel together over the simple query protocol, and the expired-hold release is a single CTE rather than a read followed by a dependent write. Measured on the booking page: 727-1018 ms before, 184 ms after.
 - Row level security enabled on every public table (`015_enable_row_level_security.sql`, and each later migration for the tables it adds — 21 tables today), with the privileges Supabase grants `anon` and `authenticated` by default revoked. Supabase serves PostgREST over the `public` schema to anyone holding the publishable key, which is public by design, and that endpoint is live whether or not the application uses supabase-js — this one does not. Verified: before the migration every table answered reads and deletes over that endpoint, `staff_users.password_hash` included; after it, every one answers 401. The application is unaffected because it connects as the table owner, which bypasses RLS.
 - Database TLS decided once in `src/lib/db-ssl.mjs` and shared by the application pool and the migration runner, the way `password.mjs` is shared with `create-staff.mjs`. A local host connects in the clear; every other host verifies against the system CA store, which is what a managed provider such as Supabase requires. `DATABASE_SSL` and `DATABASE_SSL_CA` override it.
+- `npm run db:check` verifies a hosted database without writing to it: the TLS settings in force, a migration on disk the database has never applied, a migration file edited after it was applied, a public table without row level security, and any privilege `anon` or `authenticated` still holds. It exits non-zero, so a deploy can gate on it. Three of those matter only once the database is remote — a serverless host has no pre-deploy hook, so migrations are run by hand and the code can ship ahead of its schema.
 - Scheduled maintenance (specification section 14): expired booking holds are released on a timer rather than only when somebody reads the slot list, and the three tables that otherwise only grow — `stripe_webhook_events`, `customer_session_access` and `request_rate_limits` — are pruned. Webhook-event retention deliberately outlasts Stripe's three-day retry window, since that ledger is what stops a retry being charged twice. A long-running host runs it in-process from `src/instrumentation.ts`; a serverless host, where timers never fire between requests, drives the same work through `POST /api/maintenance`, which stays closed unless `MAINTENANCE_SECRET` is set.
 
 ### Interface review
@@ -79,6 +80,10 @@ seller tabs, all three Colombia views and the customer screens.
 - Spanish customer screens and Spanish Colombia local-team panel; English USA seller/admin dashboard.
 - Responsive shadcn/ui components with light, dark, and system themes.
 - Database health endpoint and repeatable API smoke tests.
+- Deployed and exercised in production: the app on Vercel, the database on
+  Supabase, and Stripe test mode driving a real booking from the public site
+  through to a confirmed reservation. See "Deployment configuration" under
+  Remaining for what is still outstanding there.
 
 ## Remaining
 
@@ -137,9 +142,28 @@ server-side regardless. Requires client sign-off on customers receiving a
 Supabase authentication email.
 
 ### 7. Deployment configuration
-A managed database, a public HTTPS webhook endpoint, production staff accounts,
-and an error-tracking destination for the JSON logs must be configured at
-deployment. Stripe stays in test mode until the client is ready to go live.
+Mostly done. The app is deployed on Vercel at `https://brash3-d.vercel.app`, the
+database is hosted on Supabase (`us-east-1`, pooler, TLS pinned to
+`certs/supabase-root-2021.crt`), and the Stripe webhook is registered against the
+production domain for `checkout.session.completed` and `checkout.session.expired`.
+Verified end to end on 12 September 2026: a booking paid on the live site was
+confirmed by the webhook 20 seconds later, with the payment logged, the
+reservation moved to `confirmada` and the seller notified. Before that
+registration existed the same booking expired its hold and released the slot,
+which is what the two `hold_expired` cancellations from 11 September are.
+
+Still outstanding at deployment:
+
+- Staff passwords created for testing are still in place and must be rotated.
+- No error-tracking destination (item 8).
+- The Supabase project is on the free plan, which pauses after a week of
+  inactivity and takes the site down until somebody resumes it by hand.
+- Stripe stays in test mode until the client is ready to go live. Live mode
+  needs its own secret key **and** its own webhook endpoint with its own signing
+  secret; neither carries over from test.
+- Preview deployments share the production `DATABASE_URL`, so a preview build
+  reads and writes live data. Harmless while the data is demo, not after.
+
 See the production checklist in `README.md`.
 
 ### 8. Error tracking destination
