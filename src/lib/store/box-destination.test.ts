@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { transaction } from "@/lib/db"
-import { resolveBoxDestination } from "@/lib/store/shippingStore"
+import { assertShipmentsMatchBox, resolveBoxDestination } from "@/lib/store/shippingStore"
 import { cleanup, createCustomer, createSession, createShipment, LOCAL_TEAM_ID, newFixtures } from "@/test/fixtures"
 
 /**
@@ -60,5 +60,30 @@ describe("resolveBoxDestination", () => {
 
     expect(destination.country).toBe("Colombia")
     expect(destination.teamId).toBe(LOCAL_TEAM_ID)
+  })
+
+  describe("adding to an existing box", () => {
+    it("accepts a shipment going where the box is already going", async () => {
+      const shipments = [await shipmentFor("Colombia")]
+
+      await expect(transaction((client) => assertShipmentsMatchBox(client, "Colombia", shipments)))
+        .resolves.toBeUndefined()
+    })
+
+    it("refuses a shipment bound for another country", async () => {
+      const shipments = [await shipmentFor("Perú")]
+
+      await expect(transaction((client) => assertShipmentsMatchBox(client, "Colombia", shipments)))
+        .rejects.toThrow("DESTINATION_MIXED")
+    })
+
+    // The box's own country is written by `resolveBoxDestination`, so the two
+    // must agree on case for the rule to hold at all.
+    it("compares countries without regard to case", async () => {
+      const shipments = [await shipmentFor("Colombia")]
+
+      await expect(transaction((client) => assertShipmentsMatchBox(client, "COLOMBIA", shipments)))
+        .resolves.toBeUndefined()
+    })
   })
 })

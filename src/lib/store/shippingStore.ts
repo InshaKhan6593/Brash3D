@@ -176,3 +176,25 @@ export async function resolveBoxDestination(
 
   return { country, teamId: team.rows[0].id }
 }
+
+/**
+ * Refuses shipments whose destination is not the one the box is already going
+ * to. Adding to an existing box is the second way a box gets filled, so it
+ * needs the same single-destination rule as creating one -- otherwise the rule
+ * holds only for the first shipments in the box.
+ */
+export async function assertShipmentsMatchBox(
+  client: PoolClient,
+  boxCountry: string,
+  shipmentIds: string[]
+): Promise<void> {
+  const foreign = await client.query(`
+    SELECT 1 FROM envios e
+    JOIN sesiones_compra sc ON sc.id = e.sesion_id
+    JOIN clientes c ON c.id = sc.cliente_id
+    WHERE e.id = ANY($1::uuid[])
+      AND lower(COALESCE(NULLIF(TRIM(c.pais), ''), $3)) <> lower($2)
+    LIMIT 1
+  `, [shipmentIds, boxCountry, DEFAULT_COUNTRY.name])
+  if (foreign.rowCount) throw new Error("DESTINATION_MIXED")
+}

@@ -2,8 +2,7 @@ import { NextResponse } from "next/server"
 import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { transaction } from "@/lib/db"
-import { DEFAULT_COUNTRY } from "@/lib/countries"
-import { listBoxManifests, resolveBoxDestination } from "@/lib/store/shippingStore"
+import { assertShipmentsMatchBox, listBoxManifests, resolveBoxDestination } from "@/lib/store/shippingStore"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -79,16 +78,7 @@ async function POSTHandler(request: Request) {
         `, boxParameters)
         if (!existing.rowCount) throw new Error("BOX_UNAVAILABLE")
 
-        // Same rule as creating a box: everything inside it goes to one country.
-        const foreign = await client.query(`
-          SELECT 1 FROM envios e
-          JOIN sesiones_compra sc ON sc.id = e.sesion_id
-          JOIN clientes c ON c.id = sc.cliente_id
-          WHERE e.id = ANY($1::uuid[])
-            AND lower(COALESCE(NULLIF(TRIM(c.pais), ''), $3)) <> lower($2)
-          LIMIT 1
-        `, [shipmentIds, existing.rows[0].pais, DEFAULT_COUNTRY.name])
-        if (foreign.rowCount) throw new Error("DESTINATION_MIXED")
+        await assertShipmentsMatchBox(client, existing.rows[0].pais, shipmentIds)
         const updated = await client.query(`
           UPDATE envios e SET caja_id=$1::uuid, tracking_number=$3, transportadora=$4
           FROM sesiones_compra sc
