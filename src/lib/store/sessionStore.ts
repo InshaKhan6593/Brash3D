@@ -696,6 +696,35 @@ export async function processBookingCheckoutEvent(input: {
   })
 }
 
+/**
+ * Records the delivery address the customer confirms before the up-front charge.
+ *
+ * Answers false once the address is frozen, which is the point of the
+ * `monto_pagado_inicial = 0` predicate. The customer's link is a capability
+ * that travels -- it is in the URL so the order page works on any device -- so
+ * a forwarded WhatsApp message reaches a page that can set a delivery address.
+ * Freezing it the moment money arrives means a leaked link can only ever read
+ * an order that is already moving; it can never redirect the goods.
+ *
+ * The single-statement UPDATE is the guard: a read-then-write could be
+ * overtaken by the webhook that records the payment.
+ *
+ * This lived as raw SQL in the checkout route. It is the only customer-writable
+ * path to `direccion_entrega`, so it belongs behind the store boundary with
+ * everything else that writes it -- and here it can be tested.
+ */
+export async function confirmDeliveryAddress(
+  sessionId: string,
+  address: string,
+  city: string
+): Promise<boolean> {
+  const saved = await query(`
+    UPDATE sesiones_compra SET direccion_entrega=$2, ciudad_entrega=$3, direccion_confirmada_at=now()
+    WHERE id::text=$1 AND estado='completada' AND monto_pagado_inicial=0
+  `, [sessionId, address, city])
+  return Boolean(saved.rowCount)
+}
+
 export async function rotateCustomerAccess(sessionId: string): Promise<string | null> {
   return transaction(async (client) => {
     const exists = await client.query(
@@ -1132,17 +1161,36 @@ export async function clearSessionCheckout(
   await query(`UPDATE sesiones_compra SET ${column} = NULL WHERE ${column} = $1`, [checkoutSessionId])
 }
 
+/**
+ * Applies a Stripe checkout result to a shopping session.
+ *
+ * `already_settled` is the outcome that matters here. The Colombia team can
+ * collect the balance in cash or by transfer, and it may do so *after* a Stripe
+ * link was sent to the customer -- the team copies the link, the customer turns
+ * up with cash, and the link is still live. If that link is then paid, the
+ * money is real but the balance is gone, and the UPDATE below cannot apply it.
+ *
+ * That case used to fall through to `ignored`, indistinguishable from a
+ * checkout id nobody recognises: no `payment_logs` row, no notification, and no
+ * hint anywhere in the app that Stripe was holding a charge the customer had
+ * already paid in cash. The caller now refunds it and calls back with
+ * `duplicateRefunded`, which is when the event is finally recorded -- the same
+ * shape as the late-booking refund in `processBookingCheckoutEvent`.
+ */
 export async function processSessionCheckoutEvent(input: {
   eventId: string
   checkoutSessionId: string
   paymentIntentId?: string | null
   stage: PaymentStage
   paid: boolean
-}): Promise<"confirmed" | "ignored" | "duplicate"> {
+  /** Set on the second call, once the caller has refunded the charge. */
+  duplicateRefunded?: boolean
+}): Promise<"confirmed" | "ignored" | "duplicate" | "already_settled"> {
   return transaction(async (client) => {
     const duplicate = await client.query("SELECT 1 FROM stripe_webhook_events WHERE event_id = $1", [input.eventId])
     if (duplicate.rowCount) return "duplicate"
     const column = input.stage === "inicial" ? "checkout_session_inicial_id" : "checkout_session_final_id"
+    const paidColumn = input.stage === "inicial" ? "monto_pagado_inicial" : "monto_pagado_final"
     const result = await client.query<{
       id: string
       total: string
@@ -1152,16 +1200,63 @@ export async function processSessionCheckoutEvent(input: {
       reserva_id: string
       customer_name: string
       referrer_id: string | null
+      already_paid: string
+      offline_method: string | null
     }>(`
       SELECT sc.id::text, sc.total::text, sc.porcentaje_inicial::text,
         sc.vendedor_id::text AS seller_id,
         sc.cliente_id::text AS customer_id, sc.reserva_id::text AS reserva_id,
-        c.nombre AS customer_name, c.referido_por_id::text AS referrer_id
+        c.nombre AS customer_name, c.referido_por_id::text AS referrer_id,
+        sc.${paidColumn}::text AS already_paid,
+        e.metodo_pago_recibido::text AS offline_method
       FROM sesiones_compra sc JOIN clientes c ON c.id = sc.cliente_id
+      LEFT JOIN envios e ON e.sesion_id = sc.id
       WHERE sc.${column} = $1 FOR UPDATE OF sc
     `, [input.checkoutSessionId])
     const session = result.rows[0]
-    let outcome: "confirmed" | "ignored" = "ignored"
+    let outcome: "confirmed" | "ignored" | "already_settled" = "ignored"
+
+    // Money for a stage that is already settled. Read before the UPDATE so it
+    // is distinguishable from an unrecognised checkout id, which also fails to
+    // update any row.
+    if (session && input.paid && Number(session.already_paid) > 0) {
+      if (!input.duplicateRefunded) return "already_settled"
+      // Refunded by the caller. Record it against the order so the double
+      // charge and its reversal are both visible, and tell the seller -- a
+      // customer who was charged twice will ask about it.
+      const refundAmount = input.stage === "inicial"
+        ? initialAmount(Number(session.total), Number(session.porcentaje_inicial))
+        : finalAmount(Number(session.total), Number(session.porcentaje_inicial))
+      await client.query(
+        `INSERT INTO payment_logs(payment_intent_id,sesion_id,monto,tipo_pago,estado,metadata)
+         VALUES($1,$2::uuid,$3,$4,'refunded',$5::jsonb)`,
+        [
+          input.paymentIntentId || input.checkoutSessionId,
+          session.id,
+          refundAmount.toFixed(2),
+          input.stage === "inicial" ? "session_inicial" : "session_final",
+          JSON.stringify({
+            checkoutSessionId: input.checkoutSessionId,
+            eventId: input.eventId,
+            reason: "stage_already_settled",
+            settledBy: session.offline_method || "unknown",
+          }),
+        ]
+      )
+      await client.query(
+        `INSERT INTO staff_notifications(seller_id,type,title,message) VALUES($1::uuid,$2,$3,$4)`,
+        [
+          session.seller_id,
+          "duplicate_payment_refunded",
+          "Duplicate payment refunded",
+          `${session.customer_name} paid ${formatMoney(refundAmount)} through the Stripe link after the balance had already been collected${session.offline_method ? ` by ${session.offline_method}` : ""}. The card charge was refunded automatically.`,
+        ]
+      )
+      await client.query(`UPDATE sesiones_compra SET ${column} = NULL WHERE id = $1::uuid`, [session.id])
+      await client.query("INSERT INTO stripe_webhook_events(event_id,event_type) VALUES($1,'checkout.session.completed')", [input.eventId])
+      return "already_settled"
+    }
+
     if (session && input.paid) {
       const percentage = Number(session.porcentaje_inicial)
       const amount = input.stage === "inicial"
@@ -1201,6 +1296,37 @@ export async function processSessionCheckoutEvent(input: {
     await client.query("INSERT INTO stripe_webhook_events(event_id,event_type) VALUES($1,'checkout.session.completed')", [input.eventId])
     return outcome
   })
+}
+
+/**
+ * Detaches the open Stripe checkout for a stage and reports its id.
+ *
+ * Used when the balance is collected in cash or by transfer: the link the team
+ * already sent stays payable in Stripe for hours, so it has to be expired
+ * there as well. The column is cleared in the same statement that reads it, so
+ * two concurrent collections cannot both try to expire the same checkout.
+ */
+export async function takeOpenCheckoutForStage(
+  sessionId: string,
+  stage: PaymentStage
+): Promise<string | null> {
+  const column = stage === "inicial" ? "checkout_session_inicial_id" : "checkout_session_final_id"
+  // The id comes from the CTE, not from RETURNING on the UPDATE: PostgreSQL's
+  // RETURNING reports the *new* row, which is the NULL this statement just
+  // wrote. Reading it in a locked CTE also makes the read-and-clear atomic.
+  const result = await query<{ checkout_id: string }>(`
+    WITH open_checkout AS (
+      SELECT id, ${column} AS checkout_id
+      FROM sesiones_compra
+      WHERE id::text = $1 AND ${column} IS NOT NULL
+      FOR UPDATE
+    )
+    UPDATE sesiones_compra sc SET ${column} = NULL
+    FROM open_checkout
+    WHERE sc.id = open_checkout.id
+    RETURNING open_checkout.checkout_id
+  `, [sessionId])
+  return result.rows[0]?.checkout_id ?? null
 }
 
 async function grantReferralRewardForInitialPayment(

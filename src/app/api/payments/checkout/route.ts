@@ -3,10 +3,12 @@ import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { logger } from "@/lib/logger"
 import { requestHasSameOrigin, requireStaff, verifyCustomerAccess } from "@/lib/auth"
 import { query } from "@/lib/db"
-import { attachSessionCheckout, clearSessionCheckout } from "@/lib/store/sessionStore"
+import { attachSessionCheckout, clearSessionCheckout, confirmDeliveryAddress } from "@/lib/store/sessionStore"
 import { finalAmount, initialAmount, isPaidInFullUpFront } from "@/lib/payment-split"
 import { getStripe } from "@/lib/stripe"
 import { DEFAULT_COUNTRY } from "@/lib/countries"
+import { customerSessionUrl } from "@/lib/customer-link"
+import { CHECKOUT_ERROR } from "@/lib/checkout-errors"
 
 export const runtime = "nodejs"
 
@@ -18,12 +20,17 @@ async function POSTHandler(request: Request) {
   const stage = body.stage === "final" ? "final" : body.stage === "inicial" ? "inicial" : null
   const address = typeof body.address === "string" ? body.address.trim() : ""
   const city = typeof body.city === "string" ? body.city.trim() : ""
+  // The customer's own access token, when the page was opened from a durable
+  // link rather than in the browser that holds the cookie. `verifyCustomerAccess`
+  // falls back to the cookie when this is null, so the cookie-only path -- the
+  // browser that made the booking -- still works unchanged.
+  const accessToken = typeof body.accessToken === "string" ? body.accessToken : null
   if (!sessionId || !stage) return NextResponse.json({ error: "Invalid payment request" }, { status: 400 })
 
   if (stage === "inicial") {
-    if (!await verifyCustomerAccess(sessionId, null)) return NextResponse.json({ error: "Session not found" }, { status: 404 })
+    if (!await verifyCustomerAccess(sessionId, accessToken)) return NextResponse.json({ error: "Session not found" }, { status: 404 })
     if (address.length < 8 || address.length > 500 || city.length < 2 || city.length > 100) {
-      return NextResponse.json({ error: `Escribe una direccion de entrega completa y tu ciudad en ${DEFAULT_COUNTRY.name}.` }, { status: 400 })
+      return NextResponse.json({ error: `Escribe una direccion de entrega completa y tu ciudad en ${DEFAULT_COUNTRY.name}.`, code: CHECKOUT_ERROR.INVALID_ADDRESS }, { status: 400 })
     }
   } else {
     const staff = await requireStaff(["admin", "local_team"])
@@ -48,14 +55,13 @@ async function POSTHandler(request: Request) {
       AND ($2 = 'inicial' OR (sc.monto_pagado_inicial > 0 AND e.estado='recibido_equipo_local'))
   `, [sessionId, stage])
   const session = result.rows[0]
-  if (!session) return NextResponse.json({ error: stage === "inicial" ? "Tu factura todavia no esta lista. El vendedor debe cerrar la sesion primero." : "El equipo local debe registrar la recepcion del envio antes del pago final." }, { status: 409 })
-  if (Number(session.paid) > 0) return NextResponse.json({ error: "Este pago ya fue completado." }, { status: 409 })
-  if (stage === "inicial") {
-    const saved = await query(`
-      UPDATE sesiones_compra SET direccion_entrega=$2, ciudad_entrega=$3, direccion_confirmada_at=now()
-      WHERE id::text=$1 AND estado='completada' AND monto_pagado_inicial=0
-    `, [sessionId, address, city])
-    if (!saved.rowCount) return NextResponse.json({ error: "La direccion de entrega ya no se puede cambiar." }, { status: 409 })
+  if (!session) return NextResponse.json({
+    error: stage === "inicial" ? "Tu factura todavia no esta lista. El vendedor debe cerrar la sesion primero." : "El equipo local debe registrar la recepcion del envio antes del pago final.",
+    code: stage === "inicial" ? CHECKOUT_ERROR.INVOICE_NOT_READY : CHECKOUT_ERROR.SHIPMENT_NOT_RECEIVED,
+  }, { status: 409 })
+  if (Number(session.paid) > 0) return NextResponse.json({ error: "Este pago ya fue completado.", code: CHECKOUT_ERROR.ALREADY_PAID }, { status: 409 })
+  if (stage === "inicial" && !await confirmDeliveryAddress(sessionId, address, city)) {
+    return NextResponse.json({ error: "La direccion de entrega ya no se puede cambiar.", code: CHECKOUT_ERROR.ADDRESS_LOCKED }, { status: 409 })
   }
 
   let stripe
@@ -63,13 +69,13 @@ async function POSTHandler(request: Request) {
     stripe = getStripe()
   } catch (error) {
     logger.error("Stripe is not configured", { error, sessionId, stage })
-    return NextResponse.json({ error: "Los pagos no estan disponibles en este momento. Intentalo de nuevo en unos minutos." }, { status: 503 })
+    return NextResponse.json({ error: "Los pagos no estan disponibles en este momento. Intentalo de nuevo en unos minutos.", code: CHECKOUT_ERROR.UNAVAILABLE }, { status: 503 })
   }
   let retryMarker = "initial"
   if (session.existing_checkout) {
     const existing = await stripe.checkout.sessions.retrieve(session.existing_checkout)
     if (existing.status === "open" && existing.url) return NextResponse.json({ checkoutUrl: existing.url })
-    if (existing.status === "complete") return NextResponse.json({ error: "Payment confirmation is processing" }, { status: 409 })
+    if (existing.status === "complete") return NextResponse.json({ error: "Payment confirmation is processing", code: CHECKOUT_ERROR.CONFIRMING }, { status: 409 })
     retryMarker = `after-${existing.id}`
     await clearSessionCheckout(existing.id, stage)
   }
@@ -90,7 +96,8 @@ async function POSTHandler(request: Request) {
   // anyone calling the API directly.
   if (stage === "final" && isPaidInFullUpFront(percentage)) {
     return NextResponse.json(
-      { error: "Este pedido ya fue pagado en su totalidad. Confirma la entrega sin cobro pendiente." },
+      // The sentence is pinned by scripts/session-contract-smoke-test.mjs.
+      { error: "Este pedido ya fue pagado en su totalidad. Confirma la entrega sin cobro pendiente.", code: CHECKOUT_ERROR.SETTLED_IN_FULL },
       { status: 409 }
     )
   }
@@ -101,7 +108,7 @@ async function POSTHandler(request: Request) {
   // non-positive charge is a fault worth logging at error level.
   if (!Number.isFinite(amount) || amount <= 0) {
     logger.error("Refusing to open a checkout for a non-positive amount", { sessionId, stage, total, percentage })
-    return NextResponse.json({ error: "No pudimos calcular el monto a pagar. Contacta al equipo de Brash3D." }, { status: 409 })
+    return NextResponse.json({ error: "No pudimos calcular el monto a pagar. Contacta al equipo de Brash3D.", code: CHECKOUT_ERROR.AMOUNT_UNAVAILABLE }, { status: 409 })
   }
   const origin = new URL(request.url).origin
   const checkout = await stripe.checkout.sessions.create({
@@ -110,8 +117,12 @@ async function POSTHandler(request: Request) {
     line_items: [{ price_data: { currency: "usd", unit_amount: amount, product_data: { name: `Brash3D ${stage === "inicial" ? "initial" : "final"} payment` } }, quantity: 1 }],
     metadata: { session_id: sessionId, payment_stage: `session_${stage}` },
     payment_intent_data: { metadata: { session_id: sessionId, payment_stage: `session_${stage}` } },
-    success_url: `${origin}/session/${sessionId}?payment=processing`,
-    cancel_url: stage === "inicial" ? `${origin}/session/${sessionId}?payment=cancelled` : `${origin}/local-team?payment=cancelled`,
+    // The final charge is opened by the Colombia team, so that request carries
+    // no customer token and the return URL falls back to the cookie.
+    success_url: customerSessionUrl(origin, sessionId, accessToken, { payment: "processing" }),
+    cancel_url: stage === "inicial"
+      ? customerSessionUrl(origin, sessionId, accessToken, { payment: "cancelled" })
+      : `${origin}/local-team?payment=cancelled`,
   }, { idempotencyKey: `session-${stage}-${sessionId}-${retryMarker}` })
   if (!checkout.url || !await attachSessionCheckout(sessionId, stage, checkout.id)) {
     if (checkout.status === "open") await stripe.checkout.sessions.expire(checkout.id)

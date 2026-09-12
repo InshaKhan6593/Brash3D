@@ -51,8 +51,9 @@ customer sees an empty cart.
 
 **Resolved for now:** customer data is protected by server-side authorization
 instead. Customers receive a secure link whose token is stored only as a SHA-256
-hash and exchanged for an HTTP-only cookie. No database key of any kind reaches
-a browser, so there is no anon key for RLS to constrain.
+hash. No database key of any kind reaches a browser, so there is no anon key for
+RLS to constrain. The token stays in the URL rather than being traded for a
+cookie and discarded — see 13 below for why that had to change.
 
 **Still needs a client decision.** If we adopt Supabase Realtime (see 8 below),
 customers need a real `auth.uid()`. Supabase Auth magic links fit the existing
@@ -161,7 +162,7 @@ discovered during it.
 schema run in the Supabase SQL editor.
 
 **Current state: the database is hosted on Supabase** (`us-east-1`, accessed
-through the pooler), with all sixteen tracked migrations applied and row level
+through the pooler), with every tracked migration applied and row level
 security enabled on every public table. Docker Compose still serves local
 development and the test suite. What remains unused is Supabase's *products*:
 the app connects over `pg` as the table owner, so Auth and Realtime are not in
@@ -308,3 +309,85 @@ Meta also begins charging for service messages from 1 October 2026, with a free
 tier of 1,000 per business phone number per month. At this project's expected
 volume that is a negligible cost, but it is a change of model rather than a rate
 change. See [WhatsApp integration plan](WHATSAPP.md).
+
+---
+
+## 13. The customer's order link has to be portable
+
+**Not in the specification.** Section 7 assumes the customer is looking at
+their cart during the live call, and says nothing about how they get back to it
+afterwards.
+
+The first implementation treated the link as a one-time exchange:
+`/access/session/<id>?token=…` verified the token, set an HTTP-only cookie, and
+redirected to a clean `/session/<id>`. Stripping the token is the right instinct
+for a *live* page — a URL leaks constantly, through history, screenshots and
+forwarded messages, and a URL that authenticates is a permanent key to
+somebody's cart, address and invoice.
+
+**Why that was wrong here.** This is not a live page. It is the order record,
+and section 5 lets a customer book up to the end of next month. The cookie
+exists in exactly one browser profile, and nothing else carried the credential:
+
+- The customer was never sent a tokenised link at all. Stripe's `success_url`
+  was the clean path, and only the seller could mint a token.
+- Close that browser, switch from a phone to a laptop, open the booking
+  confirmation in WhatsApp's in-app browser and later reach for Chrome, or
+  simply clear site data, and the order was unreachable.
+- The only recovery was to ask the seller to resend. For a booking made two days
+  ahead that is the normal path, not an edge case.
+- The failure was also mislabelled: the page said the link was "invalid, expired
+  or replaced", when in truth it was valid, unexpired, and never revoked —
+  `createCustomerAccess` only ever inserts. The one real reason went unmentioned.
+
+**Resolved:** the token stays in the URL, and `src/lib/customer-link.ts` is the
+only place a customer URL is built. It is a capability with a 90-day life, not
+single-use, and additive — a customer can hold working links on several devices
+at once. Both Stripe return URLs carry it, a cookie-only visitor is handed its
+own token back and the page writes it into the address bar, and the three
+customer APIs accept it explicitly with the cookie as a fallback.
+
+This is the ordinary shape of an order-tracking link: courier tracking pages,
+payment receipts and "view your order" emails all work this way.
+
+**The cost, and what pays for it.** A leaked link reaches a page that can start
+a payment and set a delivery address. Paying someone else's invoice is not an
+attack. Redirecting their goods is, so the address freezes the moment the
+up-front payment is recorded (`confirmDeliveryAddress`, enforced in a single
+UPDATE so the webhook cannot race it). After that a leaked link can only read an
+order already in flight. `Referrer-Policy: strict-origin-when-cross-origin`
+keeps the token out of the `Referer` on the page's outbound WhatsApp links.
+
+**Still open with the client:** emailing the booking confirmation. The link is
+now durable enough to email, which is what makes email worth adding — today the
+customer's only copy is whatever tab they left open.
+
+---
+
+## 14. Language is a reader's choice, not a property of the screen
+
+**Specification, §1 and the four designs.** All customer-facing copy is
+Spanish, and the Colombia panel with it. That is correct for the buyers.
+
+It is not correct for the people running the business, who are in Miami. The
+seller and admin could not read the screens their own customers were looking
+at, or the Colombia panel they supervise — which is a support problem as much
+as a convenience one.
+
+**Why not the browser's translation.** Because it breaks the app. Chrome
+rewrites text nodes in place; React still holds the nodes it rendered, so the
+next re-render throws `NotFoundError` from `removeChild` and the error boundary
+replaces the page — *after* the action that triggered the render has committed,
+so a successful write looks like a failure. The root layout already set
+`translate="no"` for exactly this reason.
+
+**Resolved:** the app translates itself. `src/lib/i18n` holds both dictionaries,
+a provider whose initial locale is read from a cookie on the server, and a
+header switcher. Spanish stays the default and the approved copy; English is a
+translation of it. `translate="no"` stays, and the DOM stays React's.
+
+Server-composed customer errors could not follow the toggle, since the server
+does not know the reader's language, so `POST /api/payments/checkout` now sends
+a stable `code` next to its Spanish sentence. The sentences are unchanged: one
+is pinned by `scripts/session-contract-smoke-test.mjs`, and they remain the
+fallback for a code a client does not recognise.

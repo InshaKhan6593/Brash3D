@@ -27,12 +27,35 @@ designs and the 14-section technical specification).
 - Late booking payments refunded automatically, recorded in `payment_logs` and surfaced as a staff notification.
 - Persistent seller notifications for booking, initial, and final payments.
 
+### Collecting the balance without charging twice
+- The two collection routes overlapped. The Colombia team can copy a Stripe balance link *and* record cash, and recording the cash left the link payable in Stripe for hours. A customer who handed over cash and then tapped the link they had already been sent was charged a second time.
+- Worse than a double record: `processSessionCheckoutEvent` guards its UPDATE on `monto_pagado_final = 0`, so the second payment matched no row and fell through to `ignored` — the same outcome as an unrecognised checkout id. No `payment_logs` row, no notification, nothing anywhere in the app. Stripe held a real charge against a settled balance and nobody was told.
+- Two guards now. Recording an offline collection detaches and expires the Stripe checkout (`takeOpenCheckoutForStage`, then `checkout.sessions.expire`), so the link stops working. Anything that still lands — someone paying in the seconds before the collection is recorded — is detected as `already_settled`, refunded automatically, written to `payment_logs` as `refunded`, and surfaced as a seller notification. The same shape as the existing late-booking refund.
+- The Stripe link is expired after the transaction commits, deliberately: the balance is recorded either way, and a Stripe outage must never roll back money the team is physically holding.
+- The cash collection always wins. The card charge is the one reversed, and `metodo_pago_recibido` keeps the offline method.
+- Migration `017_duplicate_payment_notification.sql` permits the `duplicate_payment_refunded` notification type. Without it the refund transaction rolls back on the CHECK constraint, so the refund would be issued at Stripe and then left unrecorded -- exactly the gap this closes. Found by running the tests, not by review.
+- Recording cash or a transfer now asks for confirmation first. It closes the delivery with no undo, so it should not be one click away in a dropdown, and the dialog warns explicitly when a Stripe link for the same balance is still outstanding.
+
 ### Shipping and Colombia operations
 - Customer-confirmed Colombia delivery address before the 65 percent payment, plus system-generated shipment labels.
 - USA consolidated-box dispatch and the Colombia local-team receipt manifest.
 - Stripe, cash, and transfer collection at delivery, with transfer visually de-emphasised as the specification requires.
 - Per-box settlement summary separating Stripe (US LLC revenue) from the cash and transfer amounts that stay in Colombia as the local operating fund.
 - Customer-requested local Brash3D SAS invoice flag, surfaced in the seller panel and the Colombia delivery manifest.
+
+### Customer order links
+- The customer's order link carries its own access token, so it works in any browser, on any device, and again weeks later. Built in one place (`src/lib/customer-link.ts`) and used by the seller's copied link, the token-for-cookie redirect, and both Stripe return URLs.
+- Previously the redirect stripped the token and left the customer on a `/session/<id>` with no credential in it: the authority lived only in a cookie in one browser profile. Since a booking is routinely made days ahead, a customer who closed that browser, switched device or cleared site data had no way back into their own order, and only the seller could mint a new link. Nothing reported an error — the page simply said the session did not exist.
+- The cookie is now a convenience, not the credential. The three customer APIs each accept the token explicitly and fall back to the cookie, so neither path depends on the other, and a cookie-only visitor is handed its own token back and has it written into the address bar.
+- The "session not found" card names the real cause and tells the customer to reopen the secure link. It used to assert the link was invalid, expired or replaced — all three wrong for the common case, and misleading enough to look like a defect.
+- The delivery address freezes as soon as the up-front payment lands (`confirmDeliveryAddress`), which is what keeps a portable link safe: a forwarded link can read an order in flight but can never redirect the goods. That guard already existed as raw SQL in the checkout route; it moved behind the store boundary so it could be tested, and is now pinned in both directions.
+
+### Language
+- Spanish and English on every customer screen and the Colombia panel, switched from the header and remembered in a cookie for a year. The USA seller/admin dashboard stays English.
+- The initial locale is read server-side, so the first paint is already in the reader's language and `<html lang>` is right for a screen reader.
+- This is the app's own translation rather than the browser's on purpose: Chrome's rewrites text nodes in place, React throws `NotFoundError` from `removeChild` on the next render, and a committed write looks like a failure. `translate="no"` stays.
+- `POST /api/payments/checkout` now sends a stable error `code` beside its Spanish sentence so the page can translate it. The sentences are byte-identical — one is pinned by the contract smoke test, and they remain the fallback for an unrecognised code.
+- A test asserts both dictionaries have the same keys and the same shape, that every checkout code is translated, and that no entry was pasted into both languages untranslated. TypeScript cannot catch the dynamic lookups (`t.localTeam.filters[value]`, `t.session.payErrors[code]`).
 
 ### Referrals and history
 - Referral codes, first-paid-referral rewards, automatic complimentary booking redemption, self-referral rejection, and a monthly cap per referrer.
@@ -51,6 +74,29 @@ designs and the 14-section technical specification).
 - Database TLS decided once in `src/lib/db-ssl.mjs` and shared by the application pool and the migration runner, the way `password.mjs` is shared with `create-staff.mjs`. A local host connects in the clear; every other host verifies against the system CA store, which is what a managed provider such as Supabase requires. `DATABASE_SSL` and `DATABASE_SSL_CA` override it.
 - `npm run db:check` verifies a hosted database without writing to it: the TLS settings in force, a migration on disk the database has never applied, a migration file edited after it was applied, a public table without row level security, and any privilege `anon` or `authenticated` still holds. It exits non-zero, so a deploy can gate on it. Three of those matter only once the database is remote — a serverless host has no pre-deploy hook, so migrations are run by hand and the code can ship ahead of its schema.
 - Scheduled maintenance (specification section 14): expired booking holds are released on a timer rather than only when somebody reads the slot list, and the three tables that otherwise only grow — `stripe_webhook_events`, `customer_session_access` and `request_rate_limits` — are pruned. Webhook-event retention deliberately outlasts Stripe's three-day retry window, since that ledger is what stops a retry being charged twice. A long-running host runs it in-process from `src/instrumentation.ts`; a serverless host, where timers never fire between requests, drives the same work through `POST /api/maintenance`, which stays closed unless `MAINTENANCE_SECRET` is set.
+
+### Creating the shipment from the listing
+- "Create shipment" now creates it in place and shows the label code to copy. It was a link into the session panel, where the seller pressed a second button to do the same thing and then copied the code from a third place. Nothing in there was a decision: the label is derived from the customer name and session id, and the address is whatever the customer already confirmed.
+- Offered only for a closed, paid order with no shipment yet — the same `hasInitialPayment` gate the panel button uses, so the two cannot disagree.
+- `POST /api/sessions` answered one generic 409 for every refusal, naming a "65%" payment the split stopped being fixed at. `updateDeliveryStatus` returns null for no payment, no confirmed address, an existing shipment and a session still open, and the route now distinguishes them — necessary once the action has no panel behind it to go and inspect.
+- `src/lib/store/create-shipment.test.ts` pins the label format (accents and spaces stripped, since it is written on a box by hand), that the confirmed address is carried onto the shipment, and all four refusals including a double-click producing a second package.
+
+### Copying links
+- Copying a link now says whether it worked. Every clipboard call went through `navigator.clipboard.writeText` with the rejection either swallowed by an empty `catch` or not guarded at all, so a blocked clipboard was indistinguishable from a successful copy -- and the operator pasted whatever had been in the clipboard beforehand. Browsers reject that write outside a secure context, and when the page is not focused or the call is too far from the click.
+- `src/lib/clipboard.ts` wraps it and returns a boolean instead of throwing, so a caller cannot ignore failure by accident. `CopyToast` then reports which happened: a small confirmation at the bottom of the screen that clears itself after two seconds, or a longer-lived error saying nothing was copied.
+- The customer order link was the worst case: "Generate customer access link" copied silently with no confirmation either way, and it is the only way the customer receives their link today. Renamed to "Copy customer link", and the session panel header button with it.
+- The Colombia team's Stripe balance link had the same silent failure plus a second problem: the confirmation it set rendered in the alert at the top of the page, behind the delivery sheet the button is usually pressed from. The toast is fixed to the viewport, so it sits above the sheet.
+- The first attempt at this was a dialog showing the link with its own Copy button. It confirmed the copy, but it put a modal in front of an action the operator performs constantly and mid-call, and then made them dismiss it. Replaced with the toast, which says the same thing without taking focus.
+- Showing the link rather than only copying it also covers the blocked case and lets the operator read it out over the call.
+
+### Seller session listing
+- The row menu offered a dead end. For an unpaid order its only item read "Payment not completed" — a status, not an action, and one the stage badge in the same row already showed as "Awaiting up-front payment". It now offers "Open order details", which is a real destination: the invoice and the confirmed address are there.
+- Creating the shipment was already correctly gated on `hasInitialPayment` (the row label, the stage badge and the button inside the panel all share it), and every writer of `monto_pagado_inicial` sets `payment_intent_inicial_id` in the same statement, so the gate has no false-negative path either.
+
+### Seller dashboard navigation
+- The visible tab is a search parameter (`/seller?tab=shipping`), so every sidebar item is a real link.
+- It was component state, which left the sidebar nothing to link to: inside a live session panel all six items fell back to `<Link href="/seller">`, so clicking "Shipping" — or any other item — landed on Overview. Reloading the dashboard lost the tab too, and Back left the dashboard rather than returning to the previous tab.
+- Paging is stored against the tab it belongs to instead of being reset by an effect, so a tab change never renders the wrong page first.
 
 ### Interface review
 A screen-by-screen pass over every page at desktop and 375 px, covering all five
@@ -109,11 +155,19 @@ delivery confirmation. Today USA operations types the courier and tracking
 number when dispatching a box, and Colombia confirms delivery by hand. Needs the
 client's chosen carrier and API credentials.
 
-### 3. Seller/admin dashboard is still in English
-The client's mockup for the seller panel is in Spanish. The customer screens and
-the Colombia panel were translated; the USA seller/admin dashboard was not,
-because the seller is Miami-based and translating it is a large change. This is
-a product decision for the client, not a technical blocker.
+### 3. Seller/admin dashboard is still English-only
+The client's mockup for the seller panel is in Spanish. The USA seller/admin
+dashboard is the one surface with no Spanish, because the seller is Miami-based.
+
+What changed is that this is now only a translation job, not a build. The
+customer screens and the Colombia panel run on `src/lib/i18n`, with a header
+switcher, a cookie, server-side initial locale and a test that holds the two
+dictionaries in step. Translating the dashboard means adding a `seller` section
+to `messages.ts` and threading `useLocale` through `seller-panel.tsx` and
+`schedule-panel.tsx` — roughly 1,400 lines of dense JSX, so it is a sizeable
+change, but it needs no new mechanism.
+
+Still a product decision for the client: whether the Miami seller wants it.
 
 ### 4. Polling instead of realtime
 The specification assumed Supabase Realtime. The customer and seller session

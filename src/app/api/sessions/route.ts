@@ -166,8 +166,20 @@ async function POSTHandler(request: Request) {
     }
     const session = await updateDeliveryStatus(sessionId, status as EnvioEstado)
     if (!session) {
+      // `updateDeliveryStatus` answers null for every refusal — no payment, no
+      // confirmed address, a shipment that already exists — and this used to
+      // collapse all of them into one message that named a "65%" payment the
+      // split stopped being fixed at. The seller can now create the shipment
+      // straight from the listing, so the reason has to be the actual one:
+      // there is no panel to open and inspect.
       return NextResponse.json(
-        { error: "Complete the current delivery step after the 65% payment is confirmed" },
+        { error: targetSession.envio
+          ? "This order already has a shipment"
+          : targetSession.montoPagadoInicial <= 0
+            ? "The customer's up-front payment has not been confirmed yet"
+            : !targetSession.deliveryAddress || !targetSession.deliveryCity
+              ? "The customer has not confirmed their delivery address yet"
+              : "This order is not ready for the next delivery step" },
         { status: 409 }
       )
     }

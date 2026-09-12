@@ -188,12 +188,38 @@ export async function allowRequest(key: string, limit: number, windowSeconds: nu
   })
 }
 
+/** Kept in step with `customerAccessCookie`, so the cookie never outlives the token. */
+const CUSTOMER_TOKEN_DAYS = 90
+
 export function generateCustomerToken(): { token: string; hash: string; expiresAt: Date } {
   const token = randomBytes(32).toString("base64url")
   return {
     token,
     hash: tokenHash(token),
-    expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+    expiresAt: new Date(Date.now() + CUSTOMER_TOKEN_DAYS * 24 * 60 * 60 * 1000),
+  }
+}
+
+/**
+ * Options for the customer access cookie, defined once.
+ *
+ * Three routes set this cookie and each carried its own copy of these seven
+ * fields; a `maxAge` that drifted from `CUSTOMER_TOKEN_DAYS` would leave a
+ * browser presenting a cookie the database had already expired.
+ *
+ * The cookie is a convenience, not the credential: it keeps a clean
+ * `/session/<id>` working for the browser that booked. The durable credential
+ * is the token in the URL -- see `src/lib/customer-link.ts`.
+ */
+export function customerAccessCookie() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict" as const,
+    // Both the clean customer page and the API calls it makes.
+    path: "/",
+    maxAge: CUSTOMER_TOKEN_DAYS * 24 * 60 * 60,
+    priority: "high" as const,
   }
 }
 

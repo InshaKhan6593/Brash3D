@@ -1,6 +1,6 @@
 "use client"
 
-import { Fragment, FormEvent, ReactNode, useEffect, useMemo, useState } from "react"
+import { Fragment, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import {
   ArrowLeft,
@@ -62,15 +62,17 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { useSession } from "@/lib/hooks/useSession"
+import { SESSION_LOAD_FAILED, useSession } from "@/lib/hooks/useSession"
 import { ConsolidatedBoxManifest, CustomerPurchaseHistory, EnvioEstado, SesionCompra, TimeSlot } from "@/lib/types"
 import { DEFAULT_INITIAL_PERCENTAGE, finalAmount, initialAmount, isValidPercentage } from "@/lib/payment-split"
+import { CopyToast, copyToast, type CopyToastState } from "@/components/copy-toast"
+import { copyText } from "@/lib/clipboard"
+import { dashboardTabHref, type DashboardTab } from "@/lib/dashboard-tabs"
 import { cn, formatCurrency, formatDate, formatDateTime, formatPercent } from "@/lib/utils"
-
-type DashboardTab = "overview" | "bookings" | "customers" | "sessions" | "shipping" | "schedule"
 
 interface SellerPanelProps {
   sessionId: string | null
+  tab: DashboardTab
   isAdmin: boolean
 }
 
@@ -136,10 +138,26 @@ function OrderStage({ session }: { session: SesionCompra }) {
   return <Badge><CheckCircle2 />Completed</Badge>
 }
 
+/**
+ * What the row's menu item will let the seller do, used as its label.
+ *
+ * Every branch has to name an action, because this is a menu item. It used to
+ * answer "Payment not completed" for an unpaid order, which is a *status* — and
+ * one the OrderStage badge in the same row already shows as "Awaiting up-front
+ * payment". So the only entry in the menu was a dead end that looked like a
+ * command and duplicated the column beside it. The order is still worth
+ * opening at that point (the invoice and the address are there), so it now
+ * offers that instead.
+ *
+ * Creating the shipment stays gated behind `hasInitialPayment`: it is the
+ * branch below, reachable only once the up-front money is confirmed, and the
+ * button inside the panel carries the same guard.
+ */
 function sellerActionLabel(session: SesionCompra): string {
   if (session.estado === "en_progreso") return "Manage live cart"
-  if (!hasInitialPayment(session)) return "Payment not completed"
-  if (!session.envio) return "Create individual shipment"
+  // Creating the shipment is its own menu item now, done in place, so this
+  // branch no longer claims to do it -- it only opens the order.
+  if (!session.envio) return "Open order details"
   if (session.envio.estado === "preparacion") return "Review package for boxing"
   if (session.envio.estado === "en_transito" || session.envio.estado === "en_aduanas") return "View shipment tracking"
   if (session.envio.estado === "recibido_equipo_local") return "View local-team progress"
@@ -487,6 +505,8 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
   </Dialog>
 }
 
+const CLIPBOARD_BLOCKED = "Your browser blocked the clipboard. Nothing was copied."
+
 async function createCustomerUrl(sessionId: string): Promise<string> {
   const response = await fetch("/api/sessions", {
     method: "POST",
@@ -495,16 +515,68 @@ async function createCustomerUrl(sessionId: string): Promise<string> {
   })
   const result = await response.json() as { accessToken?: string; error?: string }
   if (!response.ok || !result.accessToken) throw new Error(result.error || "Unable to create customer link")
-  return `${window.location.origin}/access/session/${sessionId}?token=${encodeURIComponent(result.accessToken)}`
+  // The /access route sets the cookie and then leaves the token in the URL, so
+  // the link the seller sends stays usable on whatever device the customer
+  // opens it on -- and remains usable if they open it again a week later.
+  return `${window.location.origin}/access/session/${encodeURIComponent(sessionId)}?token=${encodeURIComponent(result.accessToken)}`
 }
 
 function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewHistory?: (customerId: string) => void }) {
-  async function generateCustomerAccessLink() {
+  const [toast, setToast] = useState<CopyToastState | null>(null)
+  const [creatingShipment, setCreatingShipment] = useState(false)
+  // Paid, and no shipment yet. The same gate the panel button uses, so the two
+  // cannot disagree about when this is allowed.
+  const canCreateShipment = session.estado === "completada" && hasInitialPayment(session) && !session.envio
+
+  /**
+   * Creates the individual shipment from the row and shows its code.
+   *
+   * This used to be a link into the session panel, where the seller pressed a
+   * second button to do the same thing and then copied the code from a third
+   * place. The shipment has no options to fill in -- the label is derived from
+   * the customer name and the session id, and the address is whatever the
+   * customer already confirmed -- so there was nothing to decide in there.
+   *
+   * The listing polls every 5s, so the row's stage catches up on its own.
+   */
+  async function createShipmentNow() {
+    setCreatingShipment(true)
+    try {
+      const response = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "updateDeliveryStatus", sessionId: session.id, status: "preparacion" }),
+      })
+      const result = await response.json() as { session?: SesionCompra; error?: string }
+      if (!response.ok || !result.session) throw new Error(result.error || "Unable to create the shipment")
+      const code = result.session.envio?.labelCode || ""
+      // The code goes on the package, so it is copied as part of creating it
+      // rather than left to a second step. It also stays visible in the row's
+      // Shipment code column, which is the fallback if the clipboard refuses.
+      setToast(await copyText(code)
+        ? copyToast("ok", `Shipment created · ${code} copied`)
+        : copyToast("error", `Shipment created as ${code}, but the clipboard was blocked.`))
+    } catch (caughtError) {
+      setToast(copyToast("error", caughtError instanceof Error ? caughtError.message : "Unable to create the shipment"))
+    } finally {
+      setCreatingShipment(false)
+    }
+  }
+
+  // Copies, then confirms with a toast.
+  //
+  // This was a menu item that copied silently: no confirmation on success, and
+  // an empty catch on failure, so a blocked clipboard looked identical to a
+  // successful copy. It is the only way the customer gets their link today, so
+  // "did that work?" is not a question the seller should have to guess at.
+  async function copyCustomerLinkFromRow() {
     try {
       const url = await createCustomerUrl(session.id)
-      await navigator.clipboard.writeText(url)
-    } catch {
-      // Open customer view remains available when clipboard access is blocked.
+      setToast(await copyText(url)
+        ? copyToast("ok", "Customer link copied. Send it on WhatsApp.")
+        : copyToast("error", CLIPBOARD_BLOCKED))
+    } catch (caughtError) {
+      setToast(copyToast("error", caughtError instanceof Error ? caughtError.message : "Unable to create customer link"))
     }
   }
 
@@ -520,6 +592,7 @@ function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewH
   }
 
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={`Actions for ${session.cliente.nombre}`}><MoreHorizontal /></Button></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
@@ -527,14 +600,17 @@ function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewH
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild><Link href={`/seller?sessionId=${session.id}`}>{sellerActionLabel(session)}</Link></DropdownMenuItem>
         {onViewHistory && <DropdownMenuItem onSelect={() => onViewHistory(session.clienteId)}>View purchase history</DropdownMenuItem>}
-        <DropdownMenuItem onSelect={() => void generateCustomerAccessLink()}>Generate customer access link</DropdownMenuItem>
+        {canCreateShipment && <DropdownMenuItem disabled={creatingShipment} onSelect={() => void createShipmentNow()}>{creatingShipment ? "Creating shipment…" : "Create shipment"}</DropdownMenuItem>}
+        <DropdownMenuItem onSelect={() => void copyCustomerLinkFromRow()}>Copy customer link</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => void openCustomerView()}>Open customer view</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    <CopyToast state={toast} onDismiss={() => setToast(null)} />
+  </>
   )
 }
 
-export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
+export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
   const { session, loading, error, addProduct, updateQuantity, removeProduct, close, reopenForCorrection, start, updateDeliveryStatus } = useSession(sessionId)
   const [sessions, setSessions] = useState<SesionCompra[]>([])
   const [notifications, setNotifications] = useState<StaffNotification[]>([])
@@ -543,8 +619,19 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [boxes, setBoxes] = useState<ConsolidatedBoxManifest[]>([])
   const [slots, setSlots] = useState<TimeSlot[]>([])
-  const [activeTab, setActiveTab] = useState<DashboardTab>("overview")
-  const [page, setPage] = useState(1)
+  // A non-admin who lands on ?tab=schedule sees Overview: the tab is only
+  // rendered for admins, so honouring it would show an empty shell.
+  const activeTab: DashboardTab = tab === "schedule" && !isAdmin ? "overview" : tab
+  // Paging is stored against the tab it belongs to, rather than reset by an
+  // effect when the tab changes. Page 4 of Bookings has no counterpart in
+  // Customers, so carrying the offset across would land on an empty table --
+  // but resetting it in an effect means rendering the wrong page first and
+  // then correcting it.
+  // Confirms the session panel header's copy buttons.
+  const [panelToast, setPanelToast] = useState<CopyToastState | null>(null)
+  const [pagePerTab, setPagePerTab] = useState<{ tab: DashboardTab; page: number }>({ tab: activeTab, page: 1 })
+  const page = pagePerTab.tab === activeTab ? pagePerTab.page : 1
+  const setPage = useCallback((next: number) => setPagePerTab({ tab: activeTab, page: next }), [activeTab])
   const [bookingFilter, setBookingFilter] = useState<BookingFilter>("upcoming")
   const [bookingSearch, setBookingSearch] = useState("")
   const [bookingFilterDate, setBookingFilterDate] = useState("")
@@ -671,11 +758,6 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
       return matchesSearch
     })
   }, [shoppingSessions, sessionSearch])
-
-  function switchTab(tab: DashboardTab) {
-    setActiveTab(tab)
-    setPage(1)
-  }
 
   async function markNotificationRead(id: string) {
     const response = await fetch("/api/notifications", {
@@ -847,7 +929,7 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
 
   if (sessionId) {
     if (loading) return <main className="flex min-h-screen items-center justify-center">Loading session...</main>
-    if (!session) return <main className="flex min-h-screen items-center justify-center px-4"><Card className="max-w-md"><CardContent className="py-10 text-center"><p className="font-semibold">Session not found</p><p className="mt-1 text-sm text-muted-foreground">{error || "This session is unavailable or your account does not have access."}</p><Button asChild className="mt-4"><Link href="/seller">Back to dashboard</Link></Button></CardContent></Card></main>
+    if (!session) return <main className="flex min-h-screen items-center justify-center px-4"><Card className="max-w-md"><CardContent className="py-10 text-center"><p className="font-semibold">Session not found</p><p className="mt-1 text-sm text-muted-foreground">{error === SESSION_LOAD_FAILED ? "We could not load this session. Check your connection and try again." : error || "This session is unavailable or your account does not have access."}</p><Button asChild className="mt-4"><Link href="/seller">Back to dashboard</Link></Button></CardContent></Card></main>
 
     const isActive = session.estado === "en_progreso" && Boolean(session.startedAt)
     const isWaiting = session.estado === "en_progreso" && !session.startedAt
@@ -860,9 +942,12 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
     async function copyCustomerLink() {
       setActionError("")
       try {
-        await navigator.clipboard.writeText(await createCustomerUrl(activeSessionId))
+        const url = await createCustomerUrl(activeSessionId)
+        setPanelToast(await copyText(url)
+          ? copyToast("ok", "Customer link copied. Send it on WhatsApp.")
+          : copyToast("error", CLIPBOARD_BLOCKED))
       } catch (caughtError) {
-        setActionError(caughtError instanceof Error ? caughtError.message : "Unable to create customer link")
+        setPanelToast(copyToast("error", caughtError instanceof Error ? caughtError.message : "Unable to create customer link"))
       }
     }
 
@@ -870,13 +955,12 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
       const shipmentCode = session?.envio?.labelCode
       if (!shipmentCode) return
       setActionError("")
-      try {
-        await navigator.clipboard.writeText(shipmentCode)
-        setShipmentCodeCopied(true)
-        window.setTimeout(() => setShipmentCodeCopied(false), 2000)
-      } catch (caughtError) {
-        setActionError(caughtError instanceof Error ? caughtError.message : "Unable to copy shipment code")
+      if (!await copyText(shipmentCode)) {
+        setPanelToast(copyToast("error", CLIPBOARD_BLOCKED))
+        return
       }
+      setShipmentCodeCopied(true)
+      window.setTimeout(() => setShipmentCodeCopied(false), 2000)
     }
 
     async function submitProduct(event: FormEvent<HTMLFormElement>) {
@@ -933,9 +1017,10 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
 
     return (
       <SidebarProvider>
-        <SellerSidebar active="sessions" onSelect={null} isAdmin={isAdmin} />
+        <SellerSidebar active="sessions" isAdmin={isAdmin} />
         <SidebarInset className="w-0 min-w-0">
-          <header className="flex items-center justify-between border-b bg-background px-4 py-4 lg:px-8"><div className="flex items-center gap-3"><SidebarTrigger /><div><Button asChild variant="link" className="h-auto p-0 text-muted-foreground"><Link href="/seller">Seller dashboard</Link></Button><h1 className="text-xl font-bold">{session.cliente.nombre}</h1></div></div><div className="flex flex-wrap items-center justify-end gap-2">{session.requiresLocalInvoice && <Badge variant="outline"><FileText />Local invoice requested</Badge>}<span className="font-mono font-semibold"><Clock className="mr-1 inline size-4" />{isActive ? `${minutes}:${seconds}` : "Not started"}</span>{session.envio && <Badge variant="outline" aria-label={`Shipment status: ${shipmentStatusLabel(session.envio.estado)}`}>Shipment: {shipmentStatusLabel(session.envio.estado)}</Badge>}<ModeToggle /><Button variant="outline" size="sm" onClick={() => void copyCustomerLink()}><Copy />Customer link</Button></div></header>
+          <header className="flex items-center justify-between border-b bg-background px-4 py-4 lg:px-8"><div className="flex items-center gap-3"><SidebarTrigger /><div><Button asChild variant="link" className="h-auto p-0 text-muted-foreground"><Link href="/seller">Seller dashboard</Link></Button><h1 className="text-xl font-bold">{session.cliente.nombre}</h1></div></div><div className="flex flex-wrap items-center justify-end gap-2">{session.requiresLocalInvoice && <Badge variant="outline"><FileText />Local invoice requested</Badge>}<span className="font-mono font-semibold"><Clock className="mr-1 inline size-4" />{isActive ? `${minutes}:${seconds}` : "Not started"}</span>{session.envio && <Badge variant="outline" aria-label={`Shipment status: ${shipmentStatusLabel(session.envio.estado)}`}>Shipment: {shipmentStatusLabel(session.envio.estado)}</Badge>}<ModeToggle /><Button variant="outline" size="sm" onClick={() => void copyCustomerLink()}><Copy />Copy customer link</Button></div></header>
+          <CopyToast state={panelToast} onDismiss={() => setPanelToast(null)} />
           <div className="grid gap-6 p-4 lg:grid-cols-[minmax(0,1fr)_340px] lg:p-8">
             <div className="min-w-0 space-y-6">
               {isWaiting && <Card><CardHeader><CardTitle>Session waiting to start</CardTitle><CardDescription>{scheduledAt.toLocaleString(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })} · {session.outlet}</CardDescription></CardHeader><CardContent className="space-y-3"><Button className="w-full" size="lg" disabled={!canStart} onClick={() => void beginSession()}><WhatsAppIcon />Start live session</Button>{!canStart && <p className="text-center text-xs text-muted-foreground">The booking payment must be confirmed before this session can start.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}
@@ -956,7 +1041,7 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
 
   return (
     <SidebarProvider>
-      <SellerSidebar active={activeTab} onSelect={switchTab} isAdmin={isAdmin} />
+      <SellerSidebar active={activeTab} isAdmin={isAdmin} />
       <SidebarInset className="w-0 min-w-0">
         <header className="flex flex-col justify-between gap-4 border-b px-4 py-5 sm:flex-row sm:items-center lg:px-8">
           <div className="flex items-center gap-3"><SidebarTrigger className="-ml-1" /><div><p className="text-sm text-muted-foreground">Brash3D operations</p><h1 className="text-2xl font-bold capitalize">{activeTab}</h1></div></div>
@@ -1023,7 +1108,7 @@ export function SellerPanel({ sessionId, isAdmin }: SellerPanelProps) {
   )
 }
 
-function SellerSidebar({ active, onSelect, isAdmin }: { active: DashboardTab; onSelect: ((tab: DashboardTab) => void) | null; isAdmin: boolean }) {
+function SellerSidebar({ active, isAdmin }: { active: DashboardTab; isAdmin: boolean }) {
   const items: { id: DashboardTab; label: string; icon: ReactNode }[] = [
     { id: "overview", label: "Overview", icon: <LayoutDashboard /> },
     { id: "bookings", label: "Bookings", icon: <CalendarDays /> },
@@ -1047,7 +1132,7 @@ function SellerSidebar({ active, onSelect, isAdmin }: { active: DashboardTab; on
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup><SidebarGroupContent><SidebarMenu>
-          {items.map((item) => <SidebarMenuItem key={item.id}>{onSelect ? <SidebarMenuButton isActive={active === item.id} tooltip={item.label} onClick={() => onSelect(item.id)}>{item.icon}<span>{item.label}</span></SidebarMenuButton> : <SidebarMenuButton isActive={active === item.id} tooltip={item.label} asChild><Link href="/seller">{item.icon}<span>{item.label}</span></Link></SidebarMenuButton>}</SidebarMenuItem>)}
+          {items.map((item) => <SidebarMenuItem key={item.id}><SidebarMenuButton isActive={active === item.id} tooltip={item.label} asChild><Link href={dashboardTabHref(item.id)}>{item.icon}<span>{item.label}</span></Link></SidebarMenuButton></SidebarMenuItem>)}
         </SidebarMenu></SidebarGroupContent></SidebarGroup>
       </SidebarContent>
       <SidebarFooter><SidebarMenu><SidebarMenuItem><SidebarMenuButton tooltip="Sign out" onClick={() => void logout()}><LogOut /><span>Sign out</span></SidebarMenuButton></SidebarMenuItem></SidebarMenu></SidebarFooter>

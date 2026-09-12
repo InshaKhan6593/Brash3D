@@ -12,7 +12,9 @@ async function GETHandler(request: Request) {
   const requestedCustomerId = searchParams.get("customerId")
 
   if (sessionId) {
-    if (!await verifyCustomerAccess(sessionId, null)) {
+    // Same as GET /api/sessions: the customer's token is accepted from the
+    // query so a durable link works in a browser that holds no cookie.
+    if (!await verifyCustomerAccess(sessionId, searchParams.get("access"))) {
       return NextResponse.json({ error: "History not found" }, { status: 404 })
     }
     const customerId = await getCustomerIdForSession(sessionId)

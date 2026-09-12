@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
-import { allowRequest, CUSTOMER_COOKIE, requestHasSameOrigin, requireStaff } from "@/lib/auth"
+import { allowRequest, CUSTOMER_COOKIE, customerAccessCookie, requestHasSameOrigin, requireStaff } from "@/lib/auth"
+import { customerSessionPath, customerSessionUrl } from "@/lib/customer-link"
 import {
   attachBookingCheckout,
   cancelBookingHold,
@@ -52,18 +53,14 @@ async function POSTHandler(request: Request) {
 
   try {
     const { booking, session, accessToken, rewardApplied } = await createBookingWithSession(customer, typeof body.slotId === "string" ? body.slotId : "")
-    const customerCookie = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict" as const,
-      path: "/",
-      maxAge: 90 * 24 * 60 * 60,
-      priority: "high" as const,
-    }
+    const customerCookie = customerAccessCookie()
     if (rewardApplied) {
       const response = NextResponse.json({
         booking,
         session: { id: session.id },
+        // The durable link, so the page the customer is sent to carries its own
+        // credential rather than depending on the cookie set below.
+        sessionUrl: customerSessionPath(session.id, accessToken),
         rewardApplied: true,
       }, { status: 201 })
       response.cookies.set(CUSTOMER_COOKIE, accessToken, customerCookie)
@@ -86,7 +83,7 @@ async function POSTHandler(request: Request) {
         payment_intent_data: {
           metadata: { booking_id: booking.id, session_id: session.id, payment_stage: "booking_fee" },
         },
-        success_url: `${origin}/session/${session.id}?payment=processing`,
+        success_url: customerSessionUrl(origin, session.id, accessToken, { payment: "processing" }),
         cancel_url: `${origin}/?checkout=cancelled`,
         expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
       }, { idempotencyKey: `booking-checkout-${booking.id}` })
@@ -100,6 +97,7 @@ async function POSTHandler(request: Request) {
       const response = NextResponse.json({
         booking,
         session: { id: session.id },
+        sessionUrl: customerSessionPath(session.id, accessToken),
         checkoutUrl: checkout.url,
         holdExpiresAt: booking.holdExpiresAt,
       }, { status: 201 })

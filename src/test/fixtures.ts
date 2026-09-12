@@ -24,7 +24,8 @@ let slotOffset = 0
 
 export async function createCustomer(
   fixtures: Fixtures,
-  options: { referrerId?: string; country?: string } = {}
+  // `nombre` matters for the shipment label, which is derived from it.
+  options: { referrerId?: string; country?: string; nombre?: string } = {}
 ): Promise<string> {
   const tag = randomUUID().slice(0, 12)
   const result = await query<{ id: string }>(`
@@ -32,7 +33,7 @@ export async function createCustomer(
     VALUES ($1, $2, $3, 'Bogota', $6, $4, $5::uuid)
     RETURNING id::text
   `, [
-    `Test ${tag}`,
+    options.nombre || `Test ${tag}`,
     `vitest-${tag}@example.test`,
     `+57900${tag.replace(/\D/g, "0").slice(0, 7)}`,
     `VT-${tag.toUpperCase()}`,

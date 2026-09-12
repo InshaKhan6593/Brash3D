@@ -5,12 +5,15 @@ import { CheckCircle2, CreditCard, Package, ReceiptText, Truck } from "lucide-re
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import type { Locale } from "@/lib/i18n/locale"
 import type { CustomerPurchaseHistory, PurchaseHistoryItem } from "@/lib/types"
 import { cn, formatCurrency } from "@/lib/utils"
 
-// This table is shared by the Spanish customer order page and the English
-// USA seller dashboard, so the copy is selected rather than hard-coded.
-export type HistoryLocale = "en" | "es"
+// This table is shared by the customer order page, which follows the reader's
+// chosen language, and the USA seller dashboard, which is always English -- so
+// the copy is selected rather than hard-coded. `Locale` is the app-wide type;
+// this file predates it and had its own.
+export type HistoryLocale = Locale
 
 const COPY = {
   en: {
@@ -62,6 +65,7 @@ function PurchaseStatusBadge({ purchase, copy }: { purchase: PurchaseHistoryItem
 export function PurchaseHistoryTable({ history, locale = "en" }: { history: CustomerPurchaseHistory; locale?: HistoryLocale }) {
   const copy = COPY[locale]
   const dateLocale = locale === "es" ? "es-CO" : "en-US"
+
   const inTransitCount = history.purchases.filter((purchase) => purchase.shipmentStatus === "en_transito" || purchase.shipmentStatus === "en_aduanas").length
   const totalSpent = history.purchases.reduce((sum, purchase) => sum + purchase.total, 0)
 

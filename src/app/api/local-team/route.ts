@@ -2,8 +2,10 @@ import { NextResponse } from "next/server"
 import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { transaction } from "@/lib/db"
-import { listSessions } from "@/lib/store/sessionStore"
+import { logger } from "@/lib/logger"
+import { listSessions, takeOpenCheckoutForStage } from "@/lib/store/sessionStore"
 import { getLocalTeam, listBoxManifests } from "@/lib/store/shippingStore"
+import { getStripe } from "@/lib/stripe"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -73,7 +75,39 @@ async function POSTHandler(request: Request) {
       await client.query(`INSERT INTO payment_logs(payment_intent_id,sesion_id,monto,tipo_pago,estado,metadata) VALUES($1,$2::uuid,$3,'session_final','succeeded',$4::jsonb)`, [`offline_${crypto.randomUUID()}`, sessionId, result.rows[0].amount, JSON.stringify({ method, recordedBy: staff.id })])
       return true
     })
-    return completed ? NextResponse.json({ success: true }) : NextResponse.json({ error: "Delivery is not ready for final payment" }, { status: 409 })
+    if (!completed) return NextResponse.json({ error: "Delivery is not ready for final payment" }, { status: 409 })
+
+    // The balance is now collected in cash or by transfer, so any Stripe link
+    // already sent for it has to stop working.
+    //
+    // Without this the two collection routes overlap: the team copies the
+    // payment link, the customer turns up with cash instead, and the link stays
+    // payable in Stripe for hours afterwards. Paying it charges the customer a
+    // second time for a balance they have already handed over.
+    //
+    // Expiring it after the commit, not inside the transaction: the balance is
+    // recorded either way, and a Stripe outage must not roll back money the
+    // team is physically holding. The webhook refunds anything that still
+    // slips through -- somebody paying in the seconds before this runs -- so
+    // this is the first of two guards, not the only one.
+    const openCheckout = await takeOpenCheckoutForStage(sessionId, "final")
+    if (openCheckout) {
+      try {
+        const stripe = getStripe()
+        const existing = await stripe.checkout.sessions.retrieve(openCheckout)
+        if (existing.status === "open") await stripe.checkout.sessions.expire(openCheckout)
+        logger.info("Expired the Stripe balance link after an offline collection", {
+          sessionId, checkoutSessionId: openCheckout, method, previousStatus: existing.status,
+        })
+      } catch (error) {
+        // Logged rather than surfaced: the collection succeeded, and the
+        // webhook still refunds a charge against a settled balance.
+        logger.error("Could not expire the Stripe balance link after an offline collection", {
+          error, sessionId, checkoutSessionId: openCheckout, method,
+        })
+      }
+    }
+    return NextResponse.json({ success: true, stripeLinkClosed: Boolean(openCheckout) })
   }
 
   if (body.action === "confirmDeliveryWithoutBalance") {

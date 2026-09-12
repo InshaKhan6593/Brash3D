@@ -3,6 +3,7 @@
 import { KeyboardEvent, useId, useMemo, useState } from "react"
 import { ChevronDown } from "lucide-react"
 import { Input } from "@/components/ui/input"
+import { useLocale } from "@/lib/i18n/provider"
 import { cn } from "@/lib/utils"
 
 function normalize(value: string): string {
@@ -10,6 +11,7 @@ function normalize(value: string): string {
 }
 
 export function DeliveryCityCombobox({ cities, defaultValue = "" }: { cities: readonly string[]; defaultValue?: string }) {
+  const { t } = useLocale()
   const listId = useId()
   const [value, setValue] = useState(defaultValue)
   const [open, setOpen] = useState(false)
@@ -55,7 +57,7 @@ export function DeliveryCityCombobox({ cities, defaultValue = "" }: { cities: re
       minLength={2}
       maxLength={100}
       autoComplete="off"
-      placeholder="Busca tu ciudad"
+      placeholder={t.session.citySearch}
       required
       onFocus={() => setOpen(true)}
       onBlur={() => window.setTimeout(() => setOpen(false), 100)}

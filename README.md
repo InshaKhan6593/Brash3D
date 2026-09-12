@@ -11,7 +11,8 @@ Brash3D is a Next.js MVP for booking a live outlet-shopping session, managing it
 - Seller-created bookings and a live product-entry panel.
 - Customer live cart, order timeline, and Stripe-backed 65/35 payment flow.
 - USA seller/admin workflow for shipment-code creation, assignment to consolidated dispatch boxes, dispatch summaries with confirmation, plus a Colombia receiving manifest, final collection, and delivery confirmation.
-- Spanish customer screens and Spanish Colombia local-team panel; English USA seller/admin dashboard.
+- Spanish or English on every customer screen and the Colombia local-team panel, switched from the header and remembered per visitor; English USA seller/admin dashboard.
+- Customer order links that carry their own access token, so an order opens in any browser, on any device, and again weeks after the booking.
 - Per-box settlement summary splitting Stripe revenue (US LLC) from the Colombia local operating fund.
 - Optional local Brash3D SAS invoice request, flagged through to the delivery manifest.
 - Configurable `TAX_RATE_FL` and `FEE_RATE`, recorded per session at booking time.
@@ -53,7 +54,20 @@ Roles are scoped on the server: a seller sees only their own sessions, a local-t
 account reaches only `/local-team`, and an admin reaches both. Never commit these
 passwords or reuse development credentials in production.
 
-Staff sign in at [http://localhost:3000/login](http://localhost:3000/login). Customer order links exchange a secure URL token for a scoped HTTP-only cookie and do not require customer passwords.
+Staff sign in at [http://localhost:3000/login](http://localhost:3000/login).
+
+Customers never get a password. Their order link carries a random access token,
+stored only as a SHA-256 hash, valid 90 days and not single-use. Opening
+`/access/session/<id>?token=…` sets a scoped HTTP-only cookie **and** keeps the
+token in the URL it redirects to, so the link the customer ends up holding works
+on whatever device they open it on — which matters because a booking is
+routinely made days before the session, and the cookie only ever exists in one
+browser profile. Minting a new link does not revoke the old one, so a customer
+can hold a working link on a phone and a laptop at once.
+
+The delivery address is the one thing a shared link cannot change: it freezes as
+soon as the up-front payment is recorded. See
+[Architecture](docs/ARCHITECTURE.md#customer-order-links).
 
 For Stripe Test Mode, keep `STRIPE_MODE=test`, place rotated test keys in `.env.local`, run `stripe login`, and keep this command running in a second terminal:
 
@@ -322,5 +336,5 @@ Everything below is tracked in detail in [Implementation status](docs/IMPLEMENTA
 
 - **WhatsApp Cloud API notifications** — see [the plan](docs/WHATSAPP.md); a no-template, no-cost path exists that needs nothing from the client.
 - **Automatic courier tracking** — needs the client's chosen carrier and API. USA operations types the courier and tracking number today.
-- **A Spanish seller/admin dashboard** — customer screens and the Colombia panel are translated; the USA dashboard is not.
+- **A Spanish seller/admin dashboard** — the customer screens and the Colombia panel now switch between Spanish and English; the USA dashboard is English only. The translation layer is in place, so this is copy plus wiring rather than new machinery.
 - **Realtime updates** — the session views poll rather than subscribe.

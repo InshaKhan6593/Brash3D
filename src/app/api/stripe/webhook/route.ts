@@ -46,13 +46,33 @@ async function POSTHandler(request: Request) {
       return NextResponse.json({ received: true, outcome: "expired" })
     }
     logger.info("Stripe session checkout received", { eventId: event.id, stage, checkoutSessionId: checkout.id })
-    const outcome = await processSessionCheckoutEvent({
+    // Annotated because hoisting these out of the call widens the narrowed
+    // `stage` back to `string`.
+    const sessionInput: Parameters<typeof processSessionCheckoutEvent>[0] = {
       eventId: event.id,
       checkoutSessionId: checkout.id,
       paymentIntentId,
       stage,
       paid: checkout.payment_status === "paid",
-    })
+    }
+    let outcome = await processSessionCheckoutEvent(sessionInput)
+
+    // The customer paid a Stripe link for a stage that was already settled --
+    // in practice, the Colombia team sent the balance link and then took cash,
+    // leaving the link live. Refusing the money silently would leave a real
+    // charge on the customer's card with nothing recorded against the order, so
+    // it is refunded and then written up against the order.
+    if (outcome === "already_settled" && paymentIntentId) {
+      logger.warn("Refunding a session payment for a stage that was already settled", {
+        eventId: event.id, stage, checkoutSessionId: checkout.id,
+      })
+      await getStripe().refunds.create(
+        { payment_intent: paymentIntentId, reason: "duplicate" },
+        { idempotencyKey: `duplicate-session-${checkout.id}` }
+      )
+      outcome = await processSessionCheckoutEvent({ ...sessionInput, duplicateRefunded: true })
+    }
+
     logger.info("Stripe session checkout processed", { eventId: event.id, stage, outcome })
     return NextResponse.json({ received: true, outcome })
   }

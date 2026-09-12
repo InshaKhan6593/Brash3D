@@ -20,15 +20,24 @@
  * row says.
  */
 
+/**
+ * Copy that has to exist in both languages the customer screens support.
+ *
+ * The country's own name is not here: "Colombia" is a proper noun and reads
+ * the same either way. Its adjective does not -- "colombiano" against
+ * "Colombian" -- and neither does the local-invoice explanation.
+ */
+export type LocalizedText = { readonly es: string; readonly en: string }
+
 export type CountryConfig = {
-  /** Matches the `pais` column, and is the name shown in Spanish copy. */
+  /** Matches the `pais` column. A proper noun, so it is not translated. */
   readonly name: string
   /** ISO 3166-1 alpha-2, for future courier and address integrations. */
   readonly code: string
   /** Drives `toLocaleDateString`, `toLocaleString` and `Intl.NumberFormat`. */
   readonly locale: string
-  /** Adjective used in Spanish copy: "otro municipio colombiano". */
-  readonly adjective: string
+  /** Adjective used in copy: "otro municipio colombiano" / "another Colombian municipality". */
+  readonly adjective: LocalizedText
   /** Suggestions for the delivery-city field. Free text is still accepted. */
   readonly cities: readonly string[]
   /**
@@ -42,14 +51,14 @@ export type CountryConfig = {
    * Brash3D SAS is Colombian, so the offer is Colombia's alone until the client
    * says what the equivalent is elsewhere. `null` hides the option entirely.
    */
-  readonly localInvoice: { readonly entity: string; readonly reason: string } | null
+  readonly localInvoice: { readonly entity: string; readonly reason: LocalizedText } | null
 }
 
 const COLOMBIA: CountryConfig = {
   name: "Colombia",
   code: "CO",
   locale: "es-CO",
-  adjective: "colombiano",
+  adjective: { es: "colombiano", en: "Colombian" },
   cities: [
     "Armenia", "Barrancabermeja", "Barranquilla", "Bello", "Bogotá", "Bucaramanga",
     "Buenaventura", "Buga", "Cali", "Cartagena", "Cartago", "Chía", "Cúcuta",
@@ -64,7 +73,10 @@ const COLOMBIA: CountryConfig = {
   examplePhone: "+57 300 123 4567",
   localInvoice: {
     entity: "Brash3D SAS (Colombia)",
-    reason: "Marca esta casilla solo si necesitas deducir la compra en Colombia. El equipo la emite manualmente.",
+    reason: {
+      es: "Marca esta casilla solo si necesitas deducir la compra en Colombia. El equipo la emite manualmente.",
+      en: "Tick this only if you need to deduct the purchase in Colombia. The team issues it manually.",
+    },
   },
 }
 
