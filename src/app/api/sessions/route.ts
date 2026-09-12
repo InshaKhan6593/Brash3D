@@ -49,10 +49,27 @@ async function POSTHandler(request: Request) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 })
   }
 
+  // The cart store gates every edit on `estado = 'en_progreso' AND started_at
+  // IS NOT NULL` and answers `null` when the row does not match. Existence and
+  // ownership were settled above, so from here a `null` means the session is in
+  // the wrong state, not that it is missing — reporting that as "Session not
+  // found" told a seller who had not pressed Start that their session did not
+  // exist, which is false and offers no way out. `start` already answers 409
+  // for the same class of mismatch; these three now agree with it.
+  const sessionAcceptsEdits = targetSession.estado === "en_progreso" && Boolean(targetSession.startedAt)
+  const notStarted = () => NextResponse.json(
+    { error: targetSession.estado === "en_progreso"
+      ? "Start the session before changing the cart"
+      : "This session is closed and its cart can no longer be changed" },
+    { status: 409 }
+  )
+
   if (action === "addProduct") {
     if (!sessionId || !nombre?.trim() || !Number.isFinite(Number(data.precio)) || Number(data.precio) <= 0) {
       return NextResponse.json({ error: "A valid session, product name, and price are required" }, { status: 400 })
     }
+
+    if (!sessionAcceptsEdits) return notStarted()
 
     const session = await addProductToSession(sessionId, {
       nombre: nombre.trim(),
@@ -86,20 +103,25 @@ async function POSTHandler(request: Request) {
     if (!Number.isInteger(delta) || Math.abs(delta) !== 1) {
       return NextResponse.json({ error: "Quantity change must be 1 or -1" }, { status: 400 })
     }
+    if (!sessionAcceptsEdits) return notStarted()
+
     const session = await updateProductQuantity(sessionId, typeof data.productId === "string" ? data.productId : "", delta)
 
+    // The session is editable, so the only remaining cause is the product id.
     if (!session) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 })
+      return NextResponse.json({ error: "Product not found in this session" }, { status: 404 })
     }
 
     return NextResponse.json({ session })
   }
 
   if (action === "removeProduct") {
+    if (!sessionAcceptsEdits) return notStarted()
+
     const session = await removeProductFromSession(sessionId, typeof data.productId === "string" ? data.productId : "")
 
     if (!session) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 })
+      return NextResponse.json({ error: "Product not found in this session" }, { status: 404 })
     }
 
     return NextResponse.json({ session })

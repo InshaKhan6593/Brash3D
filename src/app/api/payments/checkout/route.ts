@@ -4,7 +4,7 @@ import { logger } from "@/lib/logger"
 import { requestHasSameOrigin, requireStaff, verifyCustomerAccess } from "@/lib/auth"
 import { query } from "@/lib/db"
 import { attachSessionCheckout, clearSessionCheckout } from "@/lib/store/sessionStore"
-import { finalAmount, initialAmount } from "@/lib/payment-split"
+import { finalAmount, initialAmount, isPaidInFullUpFront } from "@/lib/payment-split"
 import { getStripe } from "@/lib/stripe"
 
 export const runtime = "nodejs"
@@ -80,8 +80,24 @@ async function POSTHandler(request: Request) {
   // still add up to the total exactly.
   const total = Number(session.total)
   const percentage = Number(session.porcentaje_inicial)
+
+  // An order paid 100% up front has no balance, so `finalAmount` is legitimately
+  // 0 and the guard below would refuse it as an arithmetic failure — telling the
+  // Colombia team to contact Brash3D about a supported configuration, and
+  // logging an error for a routine business state. The panel already routes
+  // these orders to `confirmDeliveryWithoutBalance`; this says the same thing to
+  // anyone calling the API directly.
+  if (stage === "final" && isPaidInFullUpFront(percentage)) {
+    return NextResponse.json(
+      { error: "Este pedido ya fue pagado en su totalidad. Confirma la entrega sin cobro pendiente." },
+      { status: 409 }
+    )
+  }
+
   const dueNow = stage === "inicial" ? initialAmount(total, percentage) : finalAmount(total, percentage)
   const amount = Math.round(dueNow * 100)
+  // Still a genuine arithmetic safety net: anything else that computes a
+  // non-positive charge is a fault worth logging at error level.
   if (!Number.isFinite(amount) || amount <= 0) {
     logger.error("Refusing to open a checkout for a non-positive amount", { sessionId, stage, total, percentage })
     return NextResponse.json({ error: "No pudimos calcular el monto a pagar. Contacta al equipo de Brash3D." }, { status: 409 })
