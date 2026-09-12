@@ -1,6 +1,6 @@
 import "server-only"
 
-import type { QueryResultRow } from "pg"
+import type { PoolClient, QueryResultRow } from "pg"
 import { query } from "@/lib/db"
 import { outstandingBalance } from "@/lib/payment-split"
 import { listSessions } from "@/lib/store/sessionStore"
@@ -136,4 +136,43 @@ export async function localTeamForCountry(country: string): Promise<LocalTeam | 
   )
   const row = result.rows[0]
   return row ? { id: row.id, name: row.nombre, city: row.ciudad || undefined, country: row.pais || DEFAULT_COUNTRY.name } : null
+}
+
+/**
+ * Where a consolidated box is going, and which team receives it.
+ *
+ * A box is a physical object that travels to one place, so its destination is
+ * a property of the customers inside it rather than a constant. Mixing
+ * countries is refused rather than resolved: half a box arriving at a team that
+ * cannot deliver it is not a state worth supporting, and the seller can simply
+ * pack two boxes.
+ *
+ * Errors are thrown as codes the route maps to messages, matching how
+ * `SHIPMENT_SELECTION_CHANGED` and `BOX_UNAVAILABLE` are already handled there.
+ */
+export async function resolveBoxDestination(
+  client: PoolClient,
+  shipmentIds: string[]
+): Promise<{ country: string; teamId: string }> {
+  const destinations = await client.query<{ pais: string }>(`
+    SELECT DISTINCT COALESCE(NULLIF(TRIM(c.pais), ''), $2) AS pais
+    FROM envios e
+    JOIN sesiones_compra sc ON sc.id = e.sesion_id
+    JOIN clientes c ON c.id = sc.cliente_id
+    WHERE e.id = ANY($1::uuid[])
+  `, [shipmentIds, DEFAULT_COUNTRY.name])
+
+  // No rows means the selection no longer matches any shipment, which is the
+  // same race the UPDATE below it already guards against.
+  if (!destinations.rowCount) throw new Error("SHIPMENT_SELECTION_CHANGED")
+  if (destinations.rowCount > 1) throw new Error("DESTINATION_MIXED")
+  const country = destinations.rows[0].pais
+
+  const team = await client.query<{ id: string }>(
+    "SELECT id::text FROM equipos_locales WHERE lower(pais) = lower($1) ORDER BY created_at LIMIT 1",
+    [country]
+  )
+  if (!team.rowCount) throw new Error("NO_LOCAL_TEAM")
+
+  return { country, teamId: team.rows[0].id }
 }

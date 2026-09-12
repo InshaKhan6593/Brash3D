@@ -3,7 +3,7 @@ import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { transaction } from "@/lib/db"
 import { DEFAULT_COUNTRY } from "@/lib/countries"
-import { listBoxManifests } from "@/lib/store/shippingStore"
+import { listBoxManifests, resolveBoxDestination } from "@/lib/store/shippingStore"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -37,30 +37,13 @@ async function POSTHandler(request: Request) {
         return NextResponse.json({ error: "Courier, tracking number, and at least one shipment are required" }, { status: 400 })
       }
       const box = await transaction(async (client) => {
-        // A consolidated box travels to one place, so its destination is the
-        // customers' country rather than a constant. Mixing countries in one box
-        // would send half of it to a team that cannot deliver it.
-        const destinations = await client.query<{ pais: string }>(`
-          SELECT DISTINCT COALESCE(NULLIF(TRIM(c.pais), ''), $2) AS pais
-          FROM envios e
-          JOIN sesiones_compra sc ON sc.id = e.sesion_id
-          JOIN clientes c ON c.id = sc.cliente_id
-          WHERE e.id = ANY($1::uuid[])
-        `, [shipmentIds, DEFAULT_COUNTRY.name])
-        if (destinations.rowCount !== 1) throw new Error(destinations.rowCount ? "DESTINATION_MIXED" : "SHIPMENT_SELECTION_CHANGED")
-        const destination = destinations.rows[0].pais
-
-        const team = await client.query<{ id: string }>(
-          "SELECT id::text FROM equipos_locales WHERE lower(pais) = lower($1) ORDER BY created_at LIMIT 1",
-          [destination]
-        )
-        if (!team.rowCount) throw new Error("NO_LOCAL_TEAM")
+        const { country: destination, teamId } = await resolveBoxDestination(client, shipmentIds)
 
         const number = `BR-${crypto.randomUUID().slice(0, 8).toUpperCase()}`
         const inserted = await client.query<{ id: string }>(`
           INSERT INTO cajas_consolidadas(equipo_local_id,numero_caja,pais,courier,numero_guia,estado)
           VALUES($4::uuid,$1,$5,$2,$3,'pendiente') RETURNING id::text
-        `, [number, courier, tracking, team.rows[0].id, destination])
+        `, [number, courier, tracking, teamId, destination])
         const sellerRestriction = staff.role === "seller" ? "AND sc.vendedor_id = $5::uuid" : ""
         const parameters = staff.role === "seller"
           ? [inserted.rows[0].id, shipmentIds, tracking, courier, staff.sellerId]

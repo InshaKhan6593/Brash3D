@@ -24,12 +24,12 @@ let slotOffset = 0
 
 export async function createCustomer(
   fixtures: Fixtures,
-  options: { referrerId?: string } = {}
+  options: { referrerId?: string; country?: string } = {}
 ): Promise<string> {
   const tag = randomUUID().slice(0, 12)
   const result = await query<{ id: string }>(`
     INSERT INTO clientes (nombre, email, telefono, ciudad, pais, codigo_referido, referido_por_id)
-    VALUES ($1, $2, $3, 'Bogota', 'Colombia', $4, $5::uuid)
+    VALUES ($1, $2, $3, 'Bogota', $6, $4, $5::uuid)
     RETURNING id::text
   `, [
     `Test ${tag}`,
@@ -37,6 +37,7 @@ export async function createCustomer(
     `+57900${tag.replace(/\D/g, "0").slice(0, 7)}`,
     `VT-${tag.toUpperCase()}`,
     options.referrerId || null,
+    options.country || "Colombia",
   ])
   fixtures.customers.push(result.rows[0].id)
   return result.rows[0].id
