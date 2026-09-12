@@ -83,9 +83,67 @@ With the development server also running on port 3000:
 npm run test:smoke
 node scripts/referral-smoke-test.mjs
 node scripts/referral-webhook-smoke-test.mjs
+SEED_ADMIN_PASSWORD='<admin password>' SEED_SELLER_PASSWORD='<seller password>' \
+  node scripts/session-contract-smoke-test.mjs
 ```
 
-Each script removes the records it creates. See [Implementation status](docs/IMPLEMENTATION_STATUS.md) for what is still outstanding.
+Each script removes the records it creates.
+
+The contract smoke test pins the error responses of `POST /api/sessions`,
+`POST /api/payments/checkout` and `POST /api/local-team`.
+
+Its headline assertion is the money guard: `confirmDeliveryWithoutBalance` must
+refuse an order that still owes money. That check is the whole reason the
+endpoint is separate from ordinary delivery confirmation, and a regression in it
+would close orders with a balance outstanding. It is asserted in both
+directions — 409 with a balance, 200 for an order paid 100% up front.
+
+It also covers two cases the seller and Colombia panels never reach, so nothing
+else would catch a regression in them: editing the cart of a session that is not
+started or already closed answers 409 with the reason rather than a false
+`Session not found`, and a final checkout for a fully prepaid order reports that
+the balance is settled rather than that the amount could not be computed.
+Finally it pins the responses that are deliberate — an unknown session and
+another seller's session both stay 404 rather than 403, and a seller reading the
+Colombia panel stays 401.
+
+`SEED_SELLER_PASSWORD` is optional; without it the two authorization-boundary
+checks are skipped. Confirming delivery of a prepaid order is one-way, so that
+last check consumes its fixture and then skips cleanly on a repeat run — the
+script still exits 0.
+
+It needs the workflow states that a live order passes through. If it reports
+missing fixtures, create them first:
+
+```bash
+SEED_ADMIN_PASSWORD='<admin password>' node scripts/seed-test-fixtures.mjs
+```
+
+That seeder drives the real API for every step and writes SQL only for the two
+Stripe-webhook confirmations, which cannot be forged from a script. It writes
+payment rows that no money backs, so run it only against the demo database.
+
+Remove what it created before handing the database to anyone:
+
+```bash
+node scripts/cleanup-test-fixtures.mjs            # dry run, changes nothing
+node scripts/cleanup-test-fixtures.mjs --apply    # delete
+```
+
+The dry run is the default because `DATABASE_URL` points at a hosted database.
+Cleanup is scoped to the customers the fixture scripts create, identified by
+their `fixture+…@brash3d.test` and `spare+…@brash3d.test` emails: their
+bookings, sessions, cart lines, shipments, payment logs and access tokens go
+with them, and the slots they held are released. A consolidated box is removed
+only once it holds no shipments at all, so a box that ever carried a real order
+survives.
+
+One thing it deliberately cannot undo. The seeder also advances *pre-existing*
+demo orders through the workflow, writing payment rows against them. Those
+belong to genuine demo customers, and reverting a part-paid order to "booked" is
+not a safe automatic operation, so they are listed in the report rather than
+deleted — leave them as worked examples, or reset the demo data wholesale with
+a fresh `npm run db:migrate` against an empty database. See [Implementation status](docs/IMPLEMENTATION_STATUS.md) for what is still outstanding.
 
 ## Hosting the database on Supabase
 

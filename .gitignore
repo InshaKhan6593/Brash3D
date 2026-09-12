@@ -47,3 +47,7 @@ next-env.d.ts
 # never reach a commit, where history keeps them even after a later deletion.
 /TEST_CREDENTIALS.md
 *.credentials.md
+/TESTSPRITE_PRD.md
+testsprite_tests/
+testsprite_tests/tmp/
+testsprite_tests/tmp/config.json
