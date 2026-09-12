@@ -145,6 +145,25 @@ not a safe automatic operation, so they are listed in the report rather than
 deleted — leave them as worked examples, or reset the demo data wholesale with
 a fresh `npm run db:migrate` against an empty database. See [Implementation status](docs/IMPLEMENTATION_STATUS.md) for what is still outstanding.
 
+### Resetting to a clean system
+
+To hand the app over with no history — no customers, bookings, sessions,
+shipments, boxes or payment records — while keeping the staff logins, the
+seller and local-team rows they point at, and the weekly opening hours:
+
+```bash
+node scripts/reset-demo-data.mjs            # report what would go, change nothing
+node scripts/reset-demo-data.mjs --apply    # delete, in one transaction
+```
+
+Availability is cleared too and regenerates from the weekly template the next
+time anyone reads the slot list, so the booking page refills itself on first
+visit. Every staff session is signed out, so everyone signs in again.
+
+Unlike `cleanup-test-fixtures.mjs`, which removes only the rows the fixture
+scripts created, this empties the transactional tables outright. It dry-runs by
+default for the same reason: `DATABASE_URL` points at a hosted database.
+
 ## Hosting the database on Supabase
 
 The schema and migrations run on Supabase unchanged. Point `DATABASE_URL` at the
