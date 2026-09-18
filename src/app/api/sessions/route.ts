@@ -22,7 +22,12 @@ import {
 } from "@/lib/store/sessionStore"
 import { windowState } from "@/lib/store/whatsappStore"
 import { businessNumber } from "@/lib/whatsapp/config"
-import { sendProductUpdate, type SendOutcome } from "@/lib/whatsapp/send"
+import {
+  sendProductQuantityChanged,
+  sendProductRemoved,
+  sendProductUpdate,
+  type SendOutcome,
+} from "@/lib/whatsapp/send"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -142,26 +147,48 @@ async function POSTHandler(request: Request) {
     }
     if (!sessionAcceptsEdits) return notStarted()
 
-    const session = await updateProductQuantity(sessionId, typeof data.productId === "string" ? data.productId : "", delta)
+    const productId = typeof data.productId === "string" ? data.productId : ""
+    // Read before the change, so a quantity dropping to zero -- which removes
+    // the row -- can still be named in the message.
+    const before = targetSession.productos.find((product) => product.id === productId)
+    const session = await updateProductQuantity(sessionId, productId, delta)
 
     // The session is editable, so the only remaining cause is the product id.
     if (!session) {
       return NextResponse.json({ error: "Product not found in this session" }, { status: 404 })
     }
 
-    return NextResponse.json({ session })
+    // Same rule as the add: only for a customer who asked for it, awaited but
+    // never allowed to fail the request, because the cart has already changed
+    // and the invoice is right either way.
+    const after = session.productos.find((product) => product.id === productId)
+    const echo = before && session.whatsappUpdates
+      ? after
+        ? await sendProductQuantityChanged(session.cliente.telefono, after.nombre, after.precio, after.cantidad)
+        : await sendProductRemoved(session.cliente.telefono, before.nombre, before.cantidad)
+      : { status: "disabled" as const }
+
+    return NextResponse.json({ session, whatsapp: echoStatus(echo) })
   }
 
   if (action === "removeProduct") {
     if (!sessionAcceptsEdits) return notStarted()
 
-    const session = await removeProductFromSession(sessionId, typeof data.productId === "string" ? data.productId : "")
+    const productId = typeof data.productId === "string" ? data.productId : ""
+    // Named before it is gone: after the delete there is nothing left to read
+    // the product's name off.
+    const removed = targetSession.productos.find((product) => product.id === productId)
+    const session = await removeProductFromSession(sessionId, productId)
 
     if (!session) {
       return NextResponse.json({ error: "Product not found in this session" }, { status: 404 })
     }
 
-    return NextResponse.json({ session })
+    const echo = removed && session.whatsappUpdates
+      ? await sendProductRemoved(session.cliente.telefono, removed.nombre, removed.cantidad)
+      : { status: "disabled" as const }
+
+    return NextResponse.json({ session, whatsapp: echoStatus(echo) })
   }
 
   if (action === "setCommissionRate") {

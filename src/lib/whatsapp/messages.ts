@@ -15,12 +15,23 @@ import { messageLocale } from "@/lib/whatsapp/config"
  */
 interface WhatsAppCopy {
   productAdded: (label: string, amount: string) => string
+  /**
+   * A correction, not an addition. Without it the chat keeps showing an item
+   * the seller has already taken out of the cart, and the customer reads a
+   * total they are not being charged -- the one thing the echo exists to
+   * prevent them having to check on another screen.
+   */
+  productRemoved: (label: string) => string
+  /** The new line total after a quantity change, replacing the earlier one. */
+  productUpdated: (label: string, amount: string) => string
   updatesEnabled: string
   bookingConfirmation: (name: string, when: string, outlet: string, link: string) => string
 }
 
 const ES: WhatsAppCopy = {
   productAdded: (label, amount) => `Agregado a tu carrito: ${label} — $${amount} USD`,
+  productRemoved: (label) => `Quitado de tu carrito: ${label}`,
+  productUpdated: (label, amount) => `Actualizado en tu carrito: ${label} — $${amount} USD`,
   updatesEnabled: "Brash3D: listo. Te enviaremos aquí cada producto que agreguemos a tu carrito.",
   bookingConfirmation: (name, when, outlet, link) => [
     `Hola ${name}, tu sesión de compra en vivo con Brash3D está confirmada.`,
@@ -35,6 +46,8 @@ const ES: WhatsAppCopy = {
 
 const EN: WhatsAppCopy = {
   productAdded: (label, amount) => `Added to your cart: ${label} — $${amount} USD`,
+  productRemoved: (label) => `Removed from your cart: ${label}`,
+  productUpdated: (label, amount) => `Updated in your cart: ${label} — $${amount} USD`,
   updatesEnabled: "Brash3D: done. We will send every product we add to your cart here.",
   bookingConfirmation: (name, when, outlet, link) => [
     `Hi ${name}, your Brash3D live shopping session is confirmed.`,

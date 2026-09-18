@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { productLine, sendProductUpdate, sendTemplate, sendText } from "@/lib/whatsapp/send"
+import {
+  productLine,
+  sendProductQuantityChanged,
+  sendProductRemoved,
+  sendProductUpdate,
+  sendTemplate,
+  sendText,
+} from "@/lib/whatsapp/send"
 
 const ORIGINAL = { ...process.env }
 
@@ -215,5 +222,53 @@ describe("product update routing", () => {
     expect(await sendProductUpdate("573001234567", "Gorra", 9.5, 1))
       .toMatchObject({ status: "failed", windowClosed: true })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+// A cart edit is not only an addition. Until these existed the chat kept
+// showing an item the seller had already taken out, and a line total that had
+// since changed -- so the customer read a cart that was not theirs, which is
+// precisely what the echo exists to save them from checking elsewhere.
+describe("corrections to the cart", () => {
+  function bodySent(fetchMock: ReturnType<typeof stubFetch>): string {
+    return JSON.parse(fetchMock.mock.calls[0][1].body).text.body
+  }
+
+  it("says a product was removed, naming it", async () => {
+    const fetchMock = stubFetch(200, { messages: [{ id: "wamid.removed" }] })
+    const outcome = await sendProductRemoved("+57 300 123 4567", "Tenis Nike Pegasus", 1)
+    expect(outcome.status).toBe("sent")
+    expect(bodySent(fetchMock)).toBe("Removed from your cart: Tenis Nike Pegasus")
+  })
+
+  it("keeps the quantity in a removal, so the customer knows what left the cart", async () => {
+    const fetchMock = stubFetch(200, { messages: [{ id: "wamid.removed2" }] })
+    await sendProductRemoved("+57 300 123 4567", "Medias", 3)
+    expect(bodySent(fetchMock)).toBe("Removed from your cart: 3 x Medias")
+  })
+
+  it("reports the new line total after a quantity change", async () => {
+    const fetchMock = stubFetch(200, { messages: [{ id: "wamid.updated" }] })
+    const outcome = await sendProductQuantityChanged("+57 300 123 4567", "Chaqueta Windrunner", 68, 2)
+    expect(outcome.status).toBe("sent")
+    expect(bodySent(fetchMock)).toBe("Updated in your cart: 2 x Chaqueta Windrunner — $136.00 USD")
+  })
+
+  // The approved product template says an item was *added*. Falling back to it
+  // for a removal would tell the customer the opposite of what happened, so a
+  // correction is free text or nothing.
+  it("never falls back to the product template when the window is shut", async () => {
+    process.env.WHATSAPP_TEMPLATE_PRODUCT = "producto_agregado"
+    const fetchMock = stubFetch(400, { error: { code: 131047, message: "Re-engagement message" } })
+    const outcome = await sendProductRemoved("+57 300 123 4567", "Gorra", 1)
+    expect(outcome.status).toBe("failed")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("refuses a number that was never normalised, rather than messaging a stranger", async () => {
+    const fetchMock = stubFetch(200, { messages: [{ id: "never" }] })
+    const outcome = await sendProductRemoved("03241452724", "Gorra", 1)
+    expect(outcome.status).toBe("failed")
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

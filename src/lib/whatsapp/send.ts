@@ -203,6 +203,32 @@ export async function sendProductUpdate(
 }
 
 /**
+ * A product taken out of the cart, or its quantity changed.
+ *
+ * Free text only, with no template fallback, and that is deliberate rather than
+ * an omission. The approved product template says an item was *added*; sending
+ * it for a removal would tell the customer the opposite of what happened, which
+ * is worse than saying nothing. So a correction reaches them only while the
+ * chat is open -- and if it does not, the web cart still shows the truth, which
+ * is the arrangement specification 7.1 sets out for the echo generally.
+ *
+ * Like every other send here, it returns an outcome instead of throwing. The
+ * cart edit has already committed; a Meta outage must not undo it.
+ */
+export async function sendProductRemoved(to: string, name: string, quantity: number): Promise<SendOutcome> {
+  return sendText(to, copy().productRemoved(productLabel(name, quantity)))
+}
+
+export async function sendProductQuantityChanged(
+  to: string,
+  name: string,
+  price: number,
+  quantity: number
+): Promise<SendOutcome> {
+  return sendText(to, copy().productUpdated(productLabel(name, quantity), (price * quantity).toFixed(2)))
+}
+
+/**
  * The line the customer sees for each product the seller adds.
  *
  * Deliberately one line: it sits in a chat beside a live video call, where the
