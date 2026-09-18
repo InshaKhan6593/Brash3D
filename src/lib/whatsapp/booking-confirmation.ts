@@ -1,5 +1,7 @@
 import "server-only"
 
+import { formatAppointment } from "@/lib/appointment"
+import { DEFAULT_COUNTRY } from "@/lib/countries"
 import { customerSessionPath, customerSessionUrl } from "@/lib/customer-link"
 import { logger } from "@/lib/logger"
 import { bookingConfirmationContext, rotateCustomerAccess } from "@/lib/store/sessionStore"
@@ -39,11 +41,11 @@ export async function sendBookingConfirmation(
 
   const token = await rotateCustomerAccess(context.sessionId)
   const firstName = context.nombre.split(" ")[0] || context.nombre
-  const when = context.fechaHora.toLocaleString(dateLocale(), {
-    weekday: "long", day: "numeric", month: "long",
-    hour: "numeric", minute: "2-digit",
-    timeZone: "America/New_York",
-  })
+  // The same sentence the order page shows. It used to be pinned to the
+  // outlet's zone here while the page rendered in the reader's device zone, so
+  // a Colombian customer was told 5:00 PM by WhatsApp and 4:00 PM by their own
+  // order page -- one instant, two answers, an hour apart for half the year.
+  const when = formatAppointment(context.fechaHora, dateLocale(), DEFAULT_COUNTRY.timeZone)
 
   const template = bookingTemplate()
   const outcome = template

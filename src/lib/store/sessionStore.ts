@@ -294,6 +294,7 @@ interface SlotRow extends QueryResultRow {
   id: string
   date: string
   start_time: string
+  starts_at: Date
   available: boolean
   seller_id: string
   seller_name: string
@@ -342,6 +343,11 @@ export async function getTimeSlots(): Promise<TimeSlot[]> {
       );
 
     SELECT d.id::text, d.fecha::text AS date, to_char(d.hora_inicio, 'HH24:MI') AS start_time,
+      -- The instant the slot actually begins. The date and start_time above
+      -- are the outlet's wall clock and say nothing about the zone, so a
+      -- customer abroad cannot be shown their own time from them. Converted
+      -- with the same expression the booking insert uses, so the two agree.
+      (d.fecha + d.hora_inicio) AT TIME ZONE 'America/New_York' AS starts_at,
       d.disponible AS available, v.id::text AS seller_id, v.nombre AS seller_name,
       v.tienda_asignada AS outlet
     FROM disponibilidad d
@@ -360,6 +366,7 @@ export async function getTimeSlots(): Promise<TimeSlot[]> {
     id: row.id,
     date: row.date,
     time: displayTime(row.start_time),
+    startsAt: new Date(row.starts_at).toISOString(),
     available: row.available,
     sellerId: row.seller_id,
     sellerName: row.seller_name,

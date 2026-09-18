@@ -35,7 +35,10 @@ export interface Vendedor {
 export interface TimeSlot {
   id: string
   date: string
+  /** The outlet's wall clock, e.g. "5:00 PM". Says nothing about the zone. */
   time: string
+  /** When the slot begins, as an instant, so it can be shown in any zone. */
+  startsAt: string
   available: boolean
   sellerId: string
   sellerName?: string

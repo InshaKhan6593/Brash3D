@@ -36,6 +36,16 @@ export type CountryConfig = {
   readonly code: string
   /** Drives `toLocaleDateString`, `toLocaleString` and `Intl.NumberFormat`. */
   readonly locale: string
+  /**
+   * The zone an appointment is shown to this country's customers in.
+   *
+   * A property of the country rather than of the reader's device. A phone in
+   * an airport, a laptop left on a foreign zone, or a browser that simply
+   * guesses wrong would otherwise each show a different time for the same
+   * session -- and disagree with the WhatsApp message, which has no device to
+   * read a zone from at all. See `src/lib/appointment.ts`.
+   */
+  readonly timeZone: string
   /** Adjective used in copy: "otro municipio colombiano" / "another Colombian municipality". */
   readonly adjective: LocalizedText
   /** Suggestions for the delivery-city field. Free text is still accepted. */
@@ -76,6 +86,10 @@ const COLOMBIA: CountryConfig = {
   name: "Colombia",
   code: "CO",
   locale: "es-CO",
+  // Colombia does not observe daylight saving; it is UTC-5 all year, while
+  // Miami moves between UTC-4 and UTC-5. The gap is one hour in summer and
+  // none in winter.
+  timeZone: "America/Bogota",
   adjective: { es: "colombiano", en: "Colombian" },
   cities: [
     "Armenia", "Barrancabermeja", "Barranquilla", "Bello", "Bogotá", "Bucaramanga",

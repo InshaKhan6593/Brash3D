@@ -12,6 +12,7 @@ import { CustomerHeader } from "@/components/customer-header"
 import { DEFAULT_COUNTRY } from "@/lib/countries"
 import { intlLocale } from "@/lib/i18n/locale"
 import { useLocale } from "@/lib/i18n/provider"
+import { formatAppointment } from "@/lib/appointment"
 import { customerSessionPath } from "@/lib/customer-link"
 import { TimeSlot } from "@/lib/types"
 
@@ -197,7 +198,7 @@ export default function Home() {
                 <div className="rounded-md bg-muted p-3 text-sm sm:col-span-2 lg:col-span-1">
                   <p className="font-semibold">{t.booking.selectedAppointment}</p>
                   <p className="text-muted-foreground">
-                    {new Date(`${selectedSlot.date}T12:00:00`).toLocaleDateString(dateLocale, { month: "long", day: "numeric" })}, {selectedSlot.time} · {selectedSlot.outlet}
+                    {formatAppointment(new Date(selectedSlot.startsAt), dateLocale, DEFAULT_COUNTRY.timeZone)} · {selectedSlot.outlet}
                   </p>
                 </div>
               )}

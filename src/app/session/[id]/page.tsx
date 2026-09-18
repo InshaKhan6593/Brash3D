@@ -18,6 +18,8 @@ import {
 } from "lucide-react"
 import { CustomerHeader } from "@/components/customer-header"
 import { WhatsAppIcon } from "@/components/whatsapp-icon"
+import { formatAppointment } from "@/lib/appointment"
+import { DEFAULT_COUNTRY } from "@/lib/countries"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -440,7 +442,7 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
             <Card>
               <CardHeader className="text-center"><CardDescription>{scheduledTimePassed ? t.session.waitingForSeller : t.session.startsIn}</CardDescription><CardTitle className="font-mono text-3xl sm:text-4xl">{countdown}</CardTitle></CardHeader>
               <CardContent className="grid gap-4 sm:grid-cols-2">
-                <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.session.appointment}</p><p className="mt-1 font-semibold">{scheduledAt.toLocaleString(dateLocale, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })}</p></div>
+                <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.session.appointment}</p><p className="mt-1 font-semibold">{formatAppointment(scheduledAt, dateLocale, DEFAULT_COUNTRY.timeZone)}</p></div>
                 <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.session.outlet}</p><p className="mt-1 font-semibold">{session.outlet || "Nike Sawgrass"}</p><p className="text-sm text-muted-foreground">{t.session.withSeller(session.vendedor.nombre)}</p></div>
                 <div className="rounded-md bg-muted p-4 sm:col-span-2"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">{t.session.bookingPayment}</p><p className="text-sm text-muted-foreground">{t.session.bookingSecured}</p></div><Badge variant="secondary"><CheckCircle2 />{session.bookingFee > 0 ? t.session.feePaid : t.session.referralReward}</Badge></div></div>
                 <p className="text-center text-xs text-muted-foreground sm:col-span-2">{t.session.keepOpen}</p>
