@@ -1,6 +1,6 @@
 "use client"
 
-import { FormEvent, use, useEffect, useMemo, useState } from "react"
+import { FormEvent, use, useEffect, useMemo, useState, useSyncExternalStore } from "react"
 import Link from "next/link"
 import {
   ArrowRight,
@@ -15,6 +15,7 @@ import {
   ReceiptText,
   ShoppingBag,
   Truck,
+  X,
 } from "lucide-react"
 import { CustomerHeader } from "@/components/customer-header"
 import { WhatsAppIcon } from "@/components/whatsapp-icon"
@@ -131,6 +132,34 @@ function ReferralInviteCard({ history, t }: { history: CustomerPurchaseHistory |
  * customer would sit through the call waiting for messages that were never
  * coming.
  */
+/**
+ * Which order prompts the customer has waved away, kept in their own browser.
+ *
+ * A Set of listeners rather than a state library because `localStorage` fires
+ * no event in the tab that wrote it, and this is the only writer. Wrapped in
+ * try/catch throughout: a private window, or blocked site data, makes every
+ * accessor throw, and a prompt the customer has dismissed reappearing is a far
+ * better failure than a page that does not render.
+ */
+const dismissalListeners = new Set<() => void>()
+
+function subscribeToDismissals(onChange: () => void) {
+  dismissalListeners.add(onChange)
+  return () => { dismissalListeners.delete(onChange) }
+}
+
+function readDismissed(key: string): boolean {
+  try { return window.localStorage.getItem(key) === "1" } catch { return false }
+}
+
+function writeDismissed(key: string, dismissed: boolean) {
+  try {
+    if (dismissed) window.localStorage.setItem(key, "1")
+    else window.localStorage.removeItem(key)
+  } catch { /* private mode: the prompt simply returns on the next load */ }
+  dismissalListeners.forEach((listener) => listener())
+}
+
 function WhatsAppUpdatesButton({ sessionId, accessToken, enabled, chatHref, t }: {
   sessionId: string
   accessToken: string | null
@@ -162,57 +191,102 @@ function WhatsAppUpdatesButton({ sessionId, accessToken, enabled, chatHref, t }:
     }
   }
 
-  return <Card>
-    <CardContent className="flex flex-col justify-between gap-4 py-5 sm:flex-row sm:items-center">
-      <div className="flex items-center gap-3">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted">
-          <WhatsAppIcon className="size-5" />
-        </span>
-        <div className="min-w-0">
-          <p className="font-semibold">{on ? t.session.whatsappUpdatesDone : t.session.whatsappUpdatesTitle}</p>
-          <p className="text-sm text-muted-foreground">
-            {on ? t.session.whatsappUpdatesOn : t.session.whatsappUpdatesBody}
-          </p>
-          {error && <p className="mt-1 text-sm text-destructive">{t.session.whatsappUpdatesError}</p>}
-        </div>
-      </div>
-      {on ? (
-        <div className="flex shrink-0 items-center gap-2">
-          {/*
-            Disabled rather than removed: the customer needs to see that the
-            thing they pressed took effect, and an element that vanishes on
-            success reads as a failure.
-          */}
-          <Button type="button" size="lg" variant="secondary" disabled className="w-full sm:w-auto">
-            <Check />{t.session.whatsappUpdatesDone}
-          </Button>
-          <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={() => void change(false)}>
-            {t.session.whatsappUpdatesOff}
-          </Button>
-        </div>
-      ) : chatHref ? (
-        /*
-          One tap doing both jobs. Recording consent is only half of it: Meta
-          refuses free text to anyone who has not messaged the business in the
-          last 24 hours, and a booking is made days ahead, so the window is shut
-          by the time the session starts. Opening the chat is what reopens it.
+  // Whether the prompt has been waved away, scoped to this order so dismissing
+  // it here says nothing about the customer's next one.
+  //
+  // `useSyncExternalStore` rather than an effect: localStorage does not exist
+  // on the server, reading it during render would make the two passes
+  // disagree, and setting state from an effect body is what the lint rule
+  // forbids. The server snapshot is "not dismissed", which is the state that
+  // renders the prompt -- so it appears on the first paint and is withdrawn a
+  // moment later for somebody who already refused it.
+  const dismissKey = `brash3d:wa-dismissed:${sessionId}`
+  const dismissed = useSyncExternalStore(
+    subscribeToDismissals,
+    () => readDismissed(dismissKey),
+    () => false
+  )
 
-          An anchor rather than a button with a redirect, so the browser treats
-          it as the user navigating -- a programmatic `window.open` here is what
-          a popup blocker exists to stop.
-        */
-        <Button asChild size="lg" className="w-full shrink-0 sm:w-auto">
-          <a href={chatHref} target="_blank" rel="noopener noreferrer" onClick={() => void change(true)}>
+  function setDismissed(next: boolean) {
+    writeDismissed(dismissKey, next)
+  }
+
+  function dismiss() {
+    setDismissed(true)
+  }
+
+  // Settled state, and the state of somebody who has waved the prompt away:
+  // one quiet line rather than a card. The decision is made either way, and a
+  // panel restating it competes with the cart the customer came here to watch.
+  // It stays on the page because consent has to be reversible -- and because a
+  // dismissed prompt still needs a way back.
+  if (on || dismissed) {
+    return (
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-sm text-muted-foreground">
+        <WhatsAppIcon aria-hidden className="size-4 shrink-0" />
+        <span>{on ? t.session.whatsappUpdatesOn : t.session.whatsappUpdatesBody}</span>
+        {on ? (
+          <button type="button" disabled={saving} onClick={() => void change(false)} className="underline underline-offset-2 hover:text-foreground disabled:opacity-50">
+            {t.session.whatsappUpdatesOff}
+          </button>
+        ) : (
+          <button type="button" onClick={() => setDismissed(false)} className="underline underline-offset-2 hover:text-foreground">
+            {t.session.whatsappUpdatesCta}
+          </button>
+        )}
+        {error && <span className="w-full text-destructive">{t.session.whatsappUpdatesError}</span>}
+      </p>
+    )
+  }
+
+  // The one state that is actually asking for something. Floated over the page
+  // rather than pushed into it, so it can be refused without leaving a gap, and
+  // so it never shifts the cart down mid-call.
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed inset-x-3 bottom-3 z-50 mx-auto flex max-w-md items-start gap-3 rounded-lg border bg-background p-3 shadow-lg sm:inset-x-auto sm:right-6 sm:bottom-6 sm:mx-0"
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted">
+        <WhatsAppIcon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold">{t.session.whatsappUpdatesTitle}</p>
+        <p className="mt-0.5 text-sm text-muted-foreground">{t.session.whatsappUpdatesBody}</p>
+        {error && <p className="mt-1 text-sm text-destructive">{t.session.whatsappUpdatesError}</p>}
+        {chatHref ? (
+          /*
+            One tap doing both jobs. Recording consent is only half of it: Meta
+            refuses free text to anyone who has not messaged the business in the
+            last 24 hours, and a booking is made days ahead, so the window is
+            shut by the time the session starts. Opening the chat reopens it.
+
+            An anchor rather than a button with a redirect, so the browser
+            treats it as the user navigating -- a programmatic `window.open`
+            here is what a popup blocker exists to stop.
+          */
+          <Button asChild size="sm" className="mt-2.5 w-full">
+            <a href={chatHref} target="_blank" rel="noopener noreferrer" onClick={() => void change(true)}>
+              <WhatsAppIcon className="size-4" />{t.session.whatsappUpdatesCta}
+            </a>
+          </Button>
+        ) : (
+          <Button type="button" size="sm" disabled={saving} className="mt-2.5 w-full" onClick={() => void change(true)}>
             <WhatsAppIcon className="size-4" />{t.session.whatsappUpdatesCta}
-          </a>
-        </Button>
-      ) : (
-        <Button type="button" size="lg" disabled={saving} className="w-full shrink-0 sm:w-auto" onClick={() => void change(true)}>
-          <WhatsAppIcon className="size-4" />{t.session.whatsappUpdatesCta}
-        </Button>
-      )}
-    </CardContent>
-  </Card>
+          </Button>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={dismiss}
+        aria-label={t.session.whatsappUpdatesDismiss}
+        className="-m-1 shrink-0 rounded p-1 text-muted-foreground hover:text-foreground"
+      >
+        <X aria-hidden className="size-4" />
+      </button>
+    </div>
+  )
 }
 
 export default function CustomerSessionPage({ params, searchParams }: PageProps<"/session/[id]">) {
