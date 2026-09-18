@@ -1,6 +1,6 @@
 "use client"
 
-import { FormEvent, use, useEffect, useMemo, useState, useSyncExternalStore } from "react"
+import { FormEvent, use, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import {
   ArrowRight,
@@ -31,7 +31,7 @@ import { PurchaseHistoryTable } from "@/components/purchase-history-table"
 import { SESSION_LOAD_FAILED, useSession } from "@/lib/hooks/useSession"
 import { copyText } from "@/lib/clipboard"
 import { countryFor } from "@/lib/countries"
-import { CUSTOMER_ACCESS_PARAM, customerSessionPath, customerSessionUrl } from "@/lib/customer-link"
+import { CUSTOMER_ACCESS_PARAM, customerSessionPath } from "@/lib/customer-link"
 import { intlLocale, type Locale } from "@/lib/i18n/locale"
 import { useLocale } from "@/lib/i18n/provider"
 import type { Messages } from "@/lib/i18n/messages"
@@ -50,20 +50,6 @@ function shipmentStatusLabel(estado: EnvioEstado, country: string, t: Messages):
   }
 }
 
-/**
- * The page's own origin, without tripping over server rendering.
- *
- * `window` does not exist on the server, and reading it during render would
- * make the two passes disagree. `useSyncExternalStore` is the sanctioned way to
- * read a value that only the browser has: the server snapshot is empty, the
- * client snapshot is the real origin, and React reconciles the two itself.
- *
- * The subscribe function never fires because an origin cannot change without a
- * navigation, which remounts everything anyway.
- */
-const subscribeToNothing = () => () => {}
-const readOrigin = () => window.location.origin
-const noOriginOnServer = () => ""
 
 interface TimelineItem {
   id: string
@@ -245,7 +231,6 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
   const [history, setHistory] = useState<CustomerPurchaseHistory | null>(null)
   const activeToken = urlToken || recoveredToken
   const dateLocale = intlLocale(locale, countryFor(session?.cliente.pais).locale)
-  const origin = useSyncExternalStore(subscribeToNothing, readOrigin, noOriginOnServer)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -262,26 +247,28 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
    * tab that long, and until now the link lived only in a tab they were about
    * to close.
    *
-   * It does two jobs at once, which is why it is worth the awkwardness of
-   * prefilling a URL into someone's outgoing message: the same tap opens the
-   * 24-hour window that lets the seller echo products during the call.
+   * The message carries no link. It used to append the customer's own order
+   * URL so a durable copy lived in the chat rather than only in a tab they were
+   * about to close. Two things retired that.
    *
-   * Empty until `origin` is known, so the link is never sent half-built.
+   * The booking confirmation now arrives in this same thread, sent by us, with
+   * the link on a button. Repeating it in the customer's outgoing message puts
+   * it a few lines below where it already is.
+   *
+   * And that URL carries their access token, which is the credential to the
+   * order. It belongs in a message we send them, not in one they send us, where
+   * it lands in the business's shared inbox and wherever that inbox is
+   * forwarded. The seller opens the order from the panel regardless, so the
+   * copy bought nothing.
+   *
+   * What remains is the one job the tap has to do: open the 24-hour window that
+   * lets the seller echo products during the call. Any message opens it,
+   * whatever it says.
    */
   const chatHref = useMemo(() => {
-    // `activeToken` is required, not optional. Without it the link is
-    // `/session/<id>` with no credential in it, which works in this browser
-    // because of the cookie and nowhere else -- so the customer would send
-    // themselves a link that is dead on the phone they read it on. That is the
-    // precise failure recorded in SPEC_DECISIONS entry 13, and sending it to
-    // them over WhatsApp would make it permanent rather than momentary.
-    //
-    // The token arrives a beat later for a cookie-only visitor, so the button
-    // is absent for that moment rather than wrong.
-    if (!whatsappNumber || !origin || !activeToken) return null
-    const orderUrl = customerSessionUrl(origin, id, activeToken)
-    return `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(`${t.session.whatsappPrefill}\n${orderUrl}`)}`
-  }, [activeToken, id, origin, t.session.whatsappPrefill, whatsappNumber])
+    if (!whatsappNumber) return null
+    return `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(t.session.whatsappPrefill)}`
+  }, [t.session.whatsappPrefill, whatsappNumber])
 
   /**
    * Puts the access token into the address bar when the page was opened without
