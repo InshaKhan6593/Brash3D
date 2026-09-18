@@ -39,21 +39,59 @@ export async function recordInboundMessage(
   waId: string,
   sentAt: Date,
   messageId?: string
-): Promise<void> {
+): Promise<{ openedWindow: boolean }> {
   const id = toWaId(waId)
-  if (!id) return
-  await query(`
-    INSERT INTO whatsapp_message_windows (wa_id, last_inbound_at, last_message_id)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (wa_id) DO UPDATE SET
-      last_inbound_at = GREATEST(whatsapp_message_windows.last_inbound_at, EXCLUDED.last_inbound_at),
-      last_message_id = CASE
-        WHEN EXCLUDED.last_inbound_at >= whatsapp_message_windows.last_inbound_at
-        THEN EXCLUDED.last_message_id
-        ELSE whatsapp_message_windows.last_message_id
-      END,
-      updated_at = now()
-  `, [id, sentAt, messageId ?? null])
+  if (!id) return { openedWindow: false }
+  // The prior state is read in the same statement as the write, because it is
+  // the only way to tell "the customer has just opened the chat" from "the
+  // customer is still talking to us". The CTE sees the row as it was before the
+  // upsert, which is exactly the distinction needed.
+  const result = await query<{ was_open: boolean | null }>(`
+    WITH prior AS (
+      SELECT last_inbound_at > now() - ($4 * interval '1 hour') AS was_open
+      FROM whatsapp_message_windows WHERE wa_id = $1
+    ), upsert AS (
+      INSERT INTO whatsapp_message_windows (wa_id, last_inbound_at, last_message_id)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (wa_id) DO UPDATE SET
+        last_inbound_at = GREATEST(whatsapp_message_windows.last_inbound_at, EXCLUDED.last_inbound_at),
+        last_message_id = CASE
+          WHEN EXCLUDED.last_inbound_at >= whatsapp_message_windows.last_inbound_at
+          THEN EXCLUDED.last_message_id
+          ELSE whatsapp_message_windows.last_message_id
+        END,
+        updated_at = now()
+      RETURNING wa_id
+    )
+    SELECT (SELECT was_open FROM prior) AS was_open FROM upsert
+  `, [id, sentAt, messageId ?? null, WINDOW_HOURS])
+
+  // No prior row, or a window that had lapsed: this message is what opened it.
+  return { openedWindow: result.rows[0]?.was_open !== true }
+}
+
+/**
+ * The live order belonging to a number, when its customer has asked for
+ * WhatsApp updates.
+ *
+ * Used to answer a customer's first message with a confirmation, and only
+ * theirs: writing to somebody who merely messaged the business, and never asked
+ * for anything, is how a business number earns a low quality rating.
+ */
+export async function liveSessionForWaId(waId: string): Promise<{ telefono: string } | null> {
+  const id = toWaId(waId)
+  if (!id) return null
+  const result = await query<{ telefono: string }>(`
+    SELECT c.telefono
+    FROM sesiones_compra sc
+    JOIN clientes c ON c.id = sc.cliente_id
+    WHERE sc.estado = 'en_progreso'
+      AND sc.whatsapp_updates = true
+      AND regexp_replace(COALESCE(c.telefono, ''), '\D', '', 'g') = $1
+    ORDER BY sc.started_at DESC NULLS LAST
+    LIMIT 1
+  `, [id])
+  return result.rows[0] ?? null
 }
 
 /** Whether this number may be sent free text, and until when. */

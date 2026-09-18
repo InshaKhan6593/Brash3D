@@ -3,9 +3,6 @@ import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, verifyCustomerAccess } from "@/lib/auth"
 import { logger } from "@/lib/logger"
 import { setWhatsAppUpdates } from "@/lib/store/sessionStore"
-import { businessNumber } from "@/lib/whatsapp/config"
-import { copy } from "@/lib/whatsapp/messages"
-import { sendText } from "@/lib/whatsapp/send"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -39,18 +36,14 @@ async function POSTHandler(request: Request) {
   const session = await setWhatsAppUpdates(sessionId, body.enabled)
   if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 })
 
-  // A confirmation the customer can see, sent on the way in rather than left
-  // for the first product: it proves the number we hold is the one they are
-  // holding, at a moment they are looking at the screen and can fix a typo --
-  // rather than at 8pm on session night when the seller is already on the call.
+  // Records the preference and sends nothing. The confirmation is answered by
+  // the inbound webhook when the customer's own message arrives, because that
+  // message -- not this tap -- is what opens Meta's window.
   //
-  // Only when a window is already open, which is the case when they arrived
-  // here by tapping the chat link. Outside one this would need a template, and
-  // spending a template on "you are subscribed" is not worth it.
-  if (body.enabled && businessNumber()) {
-    const outcome = await sendText(session.cliente.telefono, copy().updatesEnabled)
-    logger.info("WhatsApp updates enabled", { sessionId, confirmation: outcome.status })
-  }
+  // Tapping only opens WhatsApp with text prefilled; WhatsApp never sends on a
+  // customer's behalf. Confirming here told anyone who opened the chat and
+  // closed it again that every product would reach them, when nothing could.
+  logger.info("WhatsApp updates preference saved", { sessionId, enabled: body.enabled })
 
   return NextResponse.json({ session })
 }

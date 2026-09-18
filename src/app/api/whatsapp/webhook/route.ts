@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server"
 import { withErrorHandling } from "@/lib/api"
 import { logger } from "@/lib/logger"
-import { recordInboundMessage } from "@/lib/store/whatsappStore"
-import { appSecret, verifyToken } from "@/lib/whatsapp/config"
+import { liveSessionForWaId, recordInboundMessage } from "@/lib/store/whatsappStore"
+import { appSecret, businessNumber, verifyToken } from "@/lib/whatsapp/config"
+import { copy } from "@/lib/whatsapp/messages"
+import { sendText } from "@/lib/whatsapp/send"
 import { inboundMessages, signatureMatches } from "@/lib/whatsapp/signature"
 
 export const dynamic = "force-dynamic"
@@ -80,7 +82,24 @@ async function POSTHandler(request: Request) {
     // Every inbound message opens or extends the window, whatever it contains --
     // a sticker counts the same as a sentence. So the recording is
     // unconditional, and only the logging distinguishes types.
-    await recordInboundMessage(message.from, message.sentAt, message.id)
+    const { openedWindow } = await recordInboundMessage(message.from, message.sentAt, message.id)
+
+    // The confirmation belongs here rather than on the button the customer
+    // pressed. It used to be sent the moment they tapped, which meant somebody
+    // who opened WhatsApp and never pressed send was still told "we will send
+    // every product here" -- a promise the app could not keep, because Meta's
+    // window had not opened and every echo would be refused.
+    //
+    // Sent only when this message is what opened the window, so a customer who
+    // keeps chatting is not answered each time; and only to someone with a live
+    // order who asked for updates, never to a stranger writing to the business.
+    if (openedWindow && businessNumber()) {
+      const session = await liveSessionForWaId(message.from)
+      if (session) {
+        const outcome = await sendText(session.telefono, copy().updatesEnabled)
+        logger.info("Answered a customer's first message", { confirmation: outcome.status })
+      }
+    }
 
     // The message body is a customer's own words and may contain anything at
     // all, so it is logged by length rather than content.

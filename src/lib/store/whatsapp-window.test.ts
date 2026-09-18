@@ -116,7 +116,46 @@ describe("customer service window", () => {
   })
 
   it("records nothing for an unusable number rather than throwing", async () => {
-    await expect(recordInboundMessage("", new Date())).resolves.toBeUndefined()
-    await expect(recordInboundMessage("not a number", new Date())).resolves.toBeUndefined()
+    await expect(recordInboundMessage("", new Date())).resolves.toEqual({ openedWindow: false })
+    await expect(recordInboundMessage("not a number", new Date())).resolves.toEqual({ openedWindow: false })
+  })
+})
+
+// The confirmation the customer gets back is sent on this signal, so it has to
+// mean "they have just opened the chat" and not merely "they said something".
+// It used to be sent when they tapped the button instead, which told anyone who
+// opened WhatsApp and never pressed send that every product would reach them --
+// a promise the app could not keep, because Meta's window had not opened.
+describe("knowing when a message opened the window", () => {
+  it("reports the first message from a number as opening it", async () => {
+    const waId = newWaId()
+    expect(await recordInboundMessage(waId, new Date(), "wamid.FIRST")).toEqual({ openedWindow: true })
+  })
+
+  it("does not report a second message, so the customer is answered once", async () => {
+    const waId = newWaId()
+    await recordInboundMessage(waId, new Date(), "wamid.ONE")
+    expect(await recordInboundMessage(waId, new Date(), "wamid.TWO")).toEqual({ openedWindow: false })
+    expect(await recordInboundMessage(waId, new Date(), "wamid.THREE")).toEqual({ openedWindow: false })
+  })
+
+  // A customer who books, chats, and comes back days later for the session has
+  // let the window lapse. That message reopens it, and is worth answering.
+  it("reports a message that reopens a lapsed window", async () => {
+    const waId = newWaId()
+    const longAgo = new Date(Date.now() - (WINDOW_HOURS + 1) * 60 * 60 * 1000)
+    await recordInboundMessage(waId, longAgo, "wamid.OLD")
+    expect((await windowState(waId)).open).toBe(false)
+    expect(await recordInboundMessage(waId, new Date(), "wamid.NEW")).toEqual({ openedWindow: true })
+    expect((await windowState(waId)).open).toBe(true)
+  })
+
+  // Meta redelivers a webhook it believes was not acknowledged. A retry must
+  // not be mistaken for the customer writing again.
+  it("treats a redelivered message as not reopening anything", async () => {
+    const waId = newWaId()
+    const sentAt = new Date()
+    expect(await recordInboundMessage(waId, sentAt, "wamid.DUP")).toEqual({ openedWindow: true })
+    expect(await recordInboundMessage(waId, sentAt, "wamid.DUP")).toEqual({ openedWindow: false })
   })
 })
