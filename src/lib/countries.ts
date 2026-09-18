@@ -47,6 +47,24 @@ export type CountryConfig = {
   readonly exampleCity: string
   readonly examplePhone: string
   /**
+   * International dialling code, digits only, no `+`.
+   *
+   * WhatsApp addresses a recipient in E.164 and has no notion of a local
+   * number: a Colombian who types `300 123 4567` the way they would into their
+   * own phone is unreachable until this is in front of it.
+   */
+  readonly dialCode: string
+  /**
+   * A national mobile number for this country, digits only, trunk prefix
+   * already removed.
+   *
+   * Mobiles only, deliberately. The number is used for WhatsApp, so a landline
+   * is not a near miss to be tidied up -- it is a number no message will ever
+   * arrive at, and it is better refused at the booking form than discovered
+   * when a confirmation silently fails days later.
+   */
+  readonly mobilePattern: RegExp
+  /**
    * The local tax invoice, when the business has an entity that can issue one.
    * Brash3D SAS is Colombian, so the offer is Colombia's alone until the client
    * says what the equivalent is elsewhere. `null` hides the option entirely.
@@ -71,6 +89,10 @@ const COLOMBIA: CountryConfig = {
   ],
   exampleCity: "Bogotá",
   examplePhone: "+57 300 123 4567",
+  dialCode: "57",
+  // Colombian mobiles are ten digits beginning with 3. Landlines are ten digits
+  // beginning with 60 and are rejected on purpose.
+  mobilePattern: /^3\d{9}$/,
   // Withdrawn at the client's instruction (14 September 2026). Specification
   // section 14 asked for this checkbox, framing it as a service to a business
   // buyer who needs to deduct the purchase locally. What the specification never

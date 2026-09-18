@@ -2,6 +2,7 @@ import "server-only"
 
 import { logger } from "@/lib/logger"
 import { accessToken, apiVersion, canSend, phoneNumberId, productTemplate, templateLanguage } from "@/lib/whatsapp/config"
+import { isSendable } from "@/lib/phone"
 import { copy } from "@/lib/whatsapp/messages"
 
 /**
@@ -35,7 +36,10 @@ export async function sendText(to: string, body: string): Promise<SendOutcome> {
   if (!canSend()) return { status: "disabled" }
 
   const recipient = to.replace(/\D/g, "")
-  if (!recipient) {
+  // Numbers stored before normalisation existed are still whatever was typed.
+  // Meta wants E.164, so a national number reaches nobody -- and could reach
+  // the wrong somebody. Refused here rather than sent hopefully.
+  if (!isSendable(recipient)) {
     return { status: "failed", detail: "The customer has no usable phone number", windowClosed: false }
   }
 
@@ -100,7 +104,10 @@ export async function sendTemplate(
   if (!canSend()) return { status: "disabled" }
 
   const recipient = to.replace(/\D/g, "")
-  if (!recipient) {
+  // Numbers stored before normalisation existed are still whatever was typed.
+  // Meta wants E.164, so a national number reaches nobody -- and could reach
+  // the wrong somebody. Refused here rather than sent hopefully.
+  if (!isSendable(recipient)) {
     return { status: "failed", detail: "The customer has no usable phone number", windowClosed: false }
   }
 

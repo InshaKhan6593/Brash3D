@@ -72,6 +72,8 @@ export default function Home() {
   // as-is; only our own markers are translated here.
   const errorMessage = error === "SLOTS_LOAD_FAILED"
     ? t.booking.loadError
+    : error === "PHONE_INVALID"
+      ? t.booking.phoneError
     : error === "BOOKING_FAILED"
       ? t.booking.bookingError
       : error === "CHECKOUT_FAILED"
@@ -98,8 +100,11 @@ export default function Home() {
           slotId: selectedSlotId,
         }),
       })
-      const data = (await response.json()) as BookingResult & { error?: string }
-      if (!response.ok) throw new Error(data.error || "BOOKING_FAILED")
+      const data = (await response.json()) as BookingResult & { error?: string; code?: string }
+      // The code is preferred over the sentence so the page can translate it,
+      // the same shape the checkout route already uses. The Spanish sentence
+      // remains the fallback for anything unrecognised.
+      if (!response.ok) throw new Error(data.code || data.error || "BOOKING_FAILED")
       if (data.rewardApplied && data.session?.id) {
         // Prefer the tokenised link the API returns, so the customer lands on a
         // URL that still opens their order from another browser next week.

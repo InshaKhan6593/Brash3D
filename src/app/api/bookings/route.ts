@@ -9,7 +9,8 @@ import {
   getBooking,
 } from "@/lib/store/sessionStore"
 import { getStripe } from "@/lib/stripe"
-import { DEFAULT_COUNTRY } from "@/lib/countries"
+import { countryFor, DEFAULT_COUNTRY } from "@/lib/countries"
+import { toE164 } from "@/lib/phone"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -41,10 +42,27 @@ async function POSTHandler(request: Request) {
     )
   }
 
+  const country = countryFor(typeof body.pais === "string" ? body.pais : undefined)
+  // Stored in the shape WhatsApp has to be given, not the shape it was typed
+  // in. A number kept as `300 123 4567` is accepted here and unreachable
+  // forever after: the confirmation and every product echo fail against Meta
+  // while the booking itself looks perfectly healthy. Refusing it at the form
+  // is the only moment the customer is present to correct it.
+  const telefono = toE164(phone, country)
+  if (!telefono) {
+    return NextResponse.json(
+      {
+        error: "Ingresa un celular con WhatsApp, local o con su código de país.",
+        code: "PHONE_INVALID",
+      },
+      { status: 400 }
+    )
+  }
+
   const customer = {
     nombre: name,
     email,
-    telefono: phone,
+    telefono,
     ciudad: city,
     pais: typeof body.pais === "string" && body.pais ? body.pais : DEFAULT_COUNTRY.name,
     referralCode,
