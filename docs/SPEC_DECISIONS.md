@@ -487,3 +487,71 @@ the same conversation. Three questions decide the shape, and none of them can be
 guessed: is the 10% on the budget or on what is actually spent; is the budget
 paid before the store visit or still 50% up front; and does an underspend refund
 or become credit.
+
+---
+
+## 17. The customer sees the invoice at close, not during the call
+
+**Specification, screen 4.** The approved design shows the customer's live cart
+with the full breakdown — subtotal, *Impuesto Florida (7%)*, *Comisión Brash3D
+(15%)* and *Total factura* — all of it visible while the session runs.
+
+That was written when the commission was one number for the whole business.
+Entry 16 changed it: the seller sets the rate per order, because the client
+prices by the deal. Those two facts do not sit together. A session starts at the
+`FEE_RATE` default, so for every customer who agreed anything other than 15% the
+only path was to build the cart at the wrong rate and correct it — and the
+correction reprices the total on the customer's screen, mid-call, after they
+have watched it climb. It reads as a bait and switch even when both sides
+agreed 25% that morning.
+
+Placing the commission control in the session panel rather than the close dialog
+was the first attempt at this, and it was a convention, not a constraint:
+`setCommissionRate` matched any `en_progreso` session, so nothing stopped a
+change with eight products in the cart and the customer looking at a total.
+
+**Resolved:** during the session the customer sees what they are buying — the
+line items and the merchandise subtotal, which are real the moment a product
+lands. Tax, commission and total appear when the seller closes the session, and
+the close dialog is where the commission is now confirmed, priced live against
+the cart so the seller sees the invoice the customer is about to be shown.
+Closing locks all of it, as before.
+
+The payment plan is hidden during the session for the same reason: both figures
+are a share of a total that does not exist yet, and `porcentaje_inicial` still
+holds its default until the seller chooses at close.
+
+**What this costs.** The customer no longer watches the final number build. The
+design intended that transparency and it is worth naming as a loss — but the
+number it showed was not the real one, and a figure that moves at the end is
+worse than a figure that arrives complete. The commission control also stays in
+the session panel, so a seller who wants the old behaviour can still set the
+agreed rate before the first product; the customer simply is not shown a total
+until it is final.
+
+---
+
+## 18. A session can end without a purchase
+
+**Not in the specification.** Every path in sections 6, 9 and 10 assumes the
+customer buys something: `cerrarSesion()` computes an invoice, and the order
+proceeds to payment and shipping.
+
+The customer who likes nothing is an ordinary outcome at an outlet, and the
+system had no exit for it. `closeSession` requires `total > 0`, and the close
+button is disabled on an empty cart, so an empty session stayed `en_progreso`
+permanently — counted as live work on the seller's Overview, and showing the
+customer a cart that would never resolve.
+
+**Resolved:** `cancelSessionWithoutPurchase` ends it as `cancelada`, the state
+the schema already had. No invoice, no payment, no shipment; the 20 USD booking
+fee already charged is untouched, which is correct — the seller did the work.
+
+It is a separate action rather than a branch of closing, because the two
+outcomes are not interchangeable: one creates an invoice the customer owes money
+against, the other creates nothing. Guarded on an empty cart in SQL, so it can
+never discard an order that has products in it, and pinned in both directions by
+`src/lib/store/no-purchase.test.ts`.
+
+The filters had to follow. "Upcoming" keyed only on `completada`, so a
+no-purchase session would have sat in the seller's default view for good.

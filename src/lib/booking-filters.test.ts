@@ -20,8 +20,8 @@ describe("matchesBookingFilter", () => {
   // The regression: a live session whose slot time had passed appeared under no
   // filter except "today" and "all", so the seller lost sight of the order they
   // were actively working on.
-  it("keeps a live session in 'upcoming' after its slot time has passed", () => {
-    expect(matchesBookingFilter(session(), "upcoming", NOW)).toBe(true)
+  it("keeps a live session in 'open' after its slot time has passed", () => {
+    expect(matchesBookingFilter(session(), "open", NOW)).toBe(true)
   })
 
   it("keeps a live session in 'in_progress' even before anyone pressed start", () => {
@@ -30,17 +30,27 @@ describe("matchesBookingFilter", () => {
 
   it("still lists a session that has not started yet", () => {
     const later = session({ fechaHoraProgramada: new Date("2026-09-10T22:00:00.000Z") })
-    expect(matchesBookingFilter(later, "upcoming", NOW)).toBe(true)
+    expect(matchesBookingFilter(later, "open", NOW)).toBe(true)
   })
 
-  it("drops a closed session from 'upcoming' and moves it to 'completed'", () => {
+  it("drops a closed session from 'open' and moves it to 'completed'", () => {
     const closed = session({ estado: "completada" })
-    expect(matchesBookingFilter(closed, "upcoming", NOW)).toBe(false)
+    expect(matchesBookingFilter(closed, "open", NOW)).toBe(false)
     expect(matchesBookingFilter(closed, "completed", NOW)).toBe(true)
   })
 
-  it("drops a cancelled booking from 'upcoming'", () => {
-    expect(matchesBookingFilter(session({ bookingEstado: "cancelada" }), "upcoming", NOW)).toBe(false)
+  it("drops a cancelled booking from 'open'", () => {
+    expect(matchesBookingFilter(session({ bookingEstado: "cancelada" }), "open", NOW)).toBe(false)
+  })
+
+  // A session ended because the customer bought nothing is finished business.
+  // "Open" means unfinished, and it keyed only on `completada`, so a
+  // no-purchase session would have sat in the seller's default view for good.
+  it("drops a session ended without a purchase from 'open'", () => {
+    const noPurchase = session({ estado: "cancelada", bookingEstado: "confirmada" })
+    expect(matchesBookingFilter(noPurchase, "open", NOW)).toBe(false)
+    expect(matchesBookingFilter(noPurchase, "in_progress", NOW)).toBe(false)
+    expect(matchesBookingFilter(noPurchase, "all", NOW)).toBe(true)
   })
 
   it("matches 'today' on the local calendar day, whatever the time of day", () => {
@@ -70,7 +80,7 @@ describe("matchesBookingFilter", () => {
       session({ fechaHoraProgramada: new Date("2026-09-01T15:00:00.000Z") }),
     ]
     for (const candidate of cases) {
-      const reachable = (["today", "upcoming", "payment_pending", "in_progress", "completed"] as const)
+      const reachable = (["today", "open", "payment_pending", "in_progress", "completed"] as const)
         .some((filter) => matchesBookingFilter(candidate, filter, NOW))
       expect(reachable).toBe(true)
     }

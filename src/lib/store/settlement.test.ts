@@ -1,14 +1,24 @@
 import { describe, expect, it } from "vitest"
 import { settlementFor } from "@/lib/store/shippingStore"
-import type { PagoFinalMetodo, SesionCompra } from "@/lib/types"
+import type { EnvioEstado, PagoFinalMetodo, SesionCompra } from "@/lib/types"
 
 // Section 13 of the specification: Stripe collections become US LLC revenue,
 // cash and transfers stay in Colombia as the local team's operating fund.
-function session(total: number, paidFinal: number, method?: PagoFinalMetodo): SesionCompra {
+//
+// `estado` mirrors production, where every path that records a final payment
+// marks the shipment delivered in the same statement — so a recorded method
+// implies a delivered package unless a case says otherwise.
+function session(
+  total: number,
+  paidFinal: number,
+  method?: PagoFinalMetodo,
+  estado: EnvioEstado | undefined = method ? "entregado" : undefined
+): SesionCompra {
   return {
     total,
     montoPagadoFinal: paidFinal,
-    envio: method ? { metodoPagoRecibido: method } : undefined,
+    porcentajeInicial: 65,
+    envio: method || estado ? { metodoPagoRecibido: method, estado } : undefined,
   } as SesionCompra
 }
 
@@ -61,10 +71,32 @@ describe("settlementFor", () => {
 
   it("counts a collection with no recorded method toward neither side", () => {
     // Defensive: a row mid-write should not silently inflate either entity.
-    const result = settlementFor([session(100, 35)])
+    const result = settlementFor([session(100, 35, undefined, "entregado")])
     expect(result.collected).toBe(35)
     expect(result.viaStripe).toBe(0)
     expect(result.localFund).toBe(0)
     expect(result.deliveredCount).toBe(1)
+  })
+
+  // The regression that made a box impossible to reconcile. An order paid 100%
+  // up front is closed by `confirmDeliveryWithoutBalance`, which records no
+  // amount and no method, so counting "collected > 0" as delivered left it in
+  // the pending column permanently: a box of three holding one prepaid order
+  // read "2 of 3" after all three had been handed over, with nothing left to do.
+  it("counts a delivered prepaid order as delivered, collecting nothing", () => {
+    const prepaid = { total: 200, montoPagadoFinal: 0, porcentajeInicial: 100, envio: { estado: "entregado" } } as SesionCompra
+    const result = settlementFor([session(100, 35, "efectivo"), prepaid])
+    expect(result.deliveredCount).toBe(2)
+    expect(result.pendingCount).toBe(0)
+    expect(result.collected).toBe(35)
+    expect(result.pending).toBe(0)
+  })
+
+  it("counts a package still awaiting its balance as pending", () => {
+    const awaiting = { total: 200, montoPagadoFinal: 0, porcentajeInicial: 65, envio: { estado: "recibido_equipo_local" } } as SesionCompra
+    const result = settlementFor([awaiting])
+    expect(result.deliveredCount).toBe(0)
+    expect(result.pendingCount).toBe(1)
+    expect(result.pending).toBeCloseTo(70, 2)
   })
 })

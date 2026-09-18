@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto"
 import type { PoolClient, QueryResult, QueryResultRow } from "pg"
 import { generateCustomerToken } from "@/lib/auth"
 import { query, transaction } from "@/lib/db"
+import { DELIVERED_QUEUE_DAYS } from "@/lib/local-team"
 import { clampPercentage, DEFAULT_INITIAL_PERCENTAGE, finalAmount, initialAmount, type PaymentStage } from "@/lib/payment-split"
 import { feeRate, referralRewardMonthlyCap, taxRate } from "@/lib/rates"
 import type { Cliente, CustomerPurchaseHistory, EnvioEstado, PagoFinalMetodo, Producto, Reserva, SesionCompra, TimeSlot, Vendedor } from "@/lib/types"
@@ -938,14 +939,24 @@ export async function listLocalTeamDeliveries(localTeamId?: string): Promise<Ses
   return selectSessions(`
     sc.estado = 'completada'
     AND sc.monto_pagado_inicial > 0
-    AND e.estado IN ('recibido_equipo_local', 'entregado')
+    AND (
+      e.estado = 'recibido_equipo_local'
+      OR (e.estado = 'entregado'
+        -- Dated by when it was handed over, falling back through the session's
+        -- own timestamps. fecha_inicio defaults to now() and is never null,
+        -- so every row has a date: a delivery that could not be dated would
+        -- compare NULL, drop out, and disappear from the team's queue without
+        -- anything saying so, which is the failure this bound exists to avoid
+        -- rather than to introduce.
+        AND COALESCE(e.fecha_entrega_real, sc.fecha_fin, sc.fecha_inicio) > now() - ($2 * interval '1 day'))
+    )
     AND ($1::uuid IS NULL OR EXISTS (
       SELECT 1 FROM cajas_consolidadas cb
       WHERE cb.id = e.caja_id
         AND cb.equipo_local_id = $1::uuid
         AND cb.estado IN ('enviada', 'recibida')
     ))
-  `, [localTeamId ?? null])
+  `, [localTeamId ?? null, DELIVERED_QUEUE_DAYS])
 }
 
 export async function getSession(id: string): Promise<SesionCompra | null> {
@@ -1201,16 +1212,53 @@ export async function setCommissionRate(
 }
 
 // The share charged up front is chosen per order by the seller: some customers
-// pay in full, others 85/15 or 65/35.
+// pay in full, others 85/15 or 65/35. The commission is confirmed in the same
+// act, because closing is the moment the customer is first shown a total.
 export async function closeSession(
   sessionId: string,
-  initialPercentage: number = DEFAULT_INITIAL_PERCENTAGE
+  initialPercentage: number = DEFAULT_INITIAL_PERCENTAGE,
+  commissionPercentage?: number
 ): Promise<SesionCompra | null> {
+  return transaction(async (client) => {
+    if (commissionPercentage !== undefined) {
+      const repriced = await client.query(`
+        UPDATE sesiones_compra SET tasa_comision = $2
+        WHERE id::text = $1 AND estado = 'en_progreso'
+      `, [sessionId, commissionPercentage / 100])
+      if (!repriced.rowCount) return null
+      await recalculateTotals(client, sessionId)
+    }
+    const result = await client.query(`
+      UPDATE sesiones_compra
+      SET estado = 'completada', fecha_fin = COALESCE(fecha_fin, NOW()), porcentaje_inicial = $2
+      WHERE id::text = $1 AND estado = 'en_progreso' AND started_at IS NOT NULL AND total > 0
+    `, [sessionId, clampPercentage(initialPercentage)])
+    if (!result.rowCount) return null
+    return getSessionWithClient(clientQuery(client), sessionId)
+  })
+}
+
+/**
+ * A session that ends with nothing bought.
+ *
+ * The customer watched the whole call and liked none of it, which is an
+ * ordinary outcome at an outlet, not an error. Without this the session has no
+ * exit at all: `closeSession` requires `total > 0`, so an empty cart left the
+ * appointment in `en_progreso` forever — counted as live work on the seller's
+ * Overview, and showing the customer a cart that would never resolve.
+ *
+ * It is a separate action rather than a branch of closing, because the two
+ * outcomes are not interchangeable: one creates an invoice the customer owes
+ * money against, the other creates nothing. Guarded on an empty cart so it can
+ * never discard an order that has products in it.
+ */
+export async function cancelSessionWithoutPurchase(sessionId: string): Promise<SesionCompra | null> {
   const result = await query(`
-    UPDATE sesiones_compra
-    SET estado = 'completada', fecha_fin = COALESCE(fecha_fin, NOW()), porcentaje_inicial = $2
-    WHERE id::text = $1 AND estado = 'en_progreso' AND started_at IS NOT NULL AND total > 0
-  `, [sessionId, clampPercentage(initialPercentage)])
+    UPDATE sesiones_compra sc
+    SET estado = 'cancelada', fecha_fin = COALESCE(fecha_fin, NOW())
+    WHERE sc.id::text = $1 AND sc.estado = 'en_progreso' AND sc.started_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM productos_carrito pc WHERE pc.sesion_id = sc.id)
+  `, [sessionId])
   if (!result.rowCount) return null
   return getSession(sessionId)
 }

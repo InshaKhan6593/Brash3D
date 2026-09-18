@@ -1,6 +1,6 @@
 "use client"
 
-import { Fragment, FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { Fragment, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import {
   ArrowLeft,
@@ -27,7 +27,7 @@ import {
   Users,
   X,
 } from "lucide-react"
-import { matchesBookingFilter, type BookingFilter } from "@/lib/booking-filters"
+import { BOOKING_FILTERS, BOOKING_FILTER_LABELS, matchesBookingFilter, type BookingFilter } from "@/lib/booking-filters"
 import { SchedulePanel } from "@/components/schedule-panel"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -76,6 +76,19 @@ interface SellerPanelProps {
   isAdmin: boolean
 }
 
+/** How long one toast holds the corner before the next in the queue takes it. */
+const TOAST_VISIBLE_MS = 5000
+
+/**
+ * The most toasts that can be waiting at once.
+ *
+ * Several payments can land together -- a consolidated box being collected
+ * through the day is the ordinary case. Beyond this the corner would be busy
+ * for minutes, so the newest are shown and the rest stay in the bell, where
+ * they are still unread and still counted.
+ */
+const MAX_QUEUED_TOASTS = 5
+
 interface StaffNotification {
   id: string
   title: string
@@ -105,6 +118,7 @@ function shipmentStatusLabel(status: EnvioEstado): string {
 }
 
 function SessionStatus({ session }: { session: SesionCompra }) {
+  if (session.estado === "cancelada") return <Badge variant="outline">No purchase</Badge>
   if (session.estado === "completada") return (
     <Badge variant="secondary" className="bg-sky-100 text-sky-700 hover:bg-sky-100 dark:bg-sky-950 dark:text-sky-300">Closed</Badge>
   )
@@ -116,6 +130,7 @@ function SessionStatus({ session }: { session: SesionCompra }) {
 
 function BookingStage({ session }: { session: SesionCompra }) {
   if (session.bookingEstado === "cancelada") return <Badge variant="destructive">Cancelled</Badge>
+  if (session.estado === "cancelada") return <Badge variant="secondary">Ended, no purchase</Badge>
   if (session.bookingEstado === "pendiente_pago") return <Badge variant="outline">Awaiting payment</Badge>
   if (session.estado === "completada") return <Badge variant="secondary">Appointment completed</Badge>
   if (session.startedAt) return <Badge>In progress</Badge>
@@ -127,6 +142,8 @@ function hasInitialPayment(session: SesionCompra): boolean {
 }
 
 function OrderStage({ session }: { session: SesionCompra }) {
+  // Nothing was bought, so none of the order stages below apply.
+  if (session.estado === "cancelada") return <Badge variant="outline">No purchase</Badge>
   if (session.estado === "en_progreso") return <Badge variant="secondary">Building cart</Badge>
   if (!hasInitialPayment(session)) return <Badge variant="outline">Awaiting up-front payment</Badge>
   if (!session.envio) return <Badge variant="secondary">Create shipment</Badge>
@@ -154,6 +171,7 @@ function OrderStage({ session }: { session: SesionCompra }) {
  * button inside the panel carries the same guard.
  */
 function sellerActionLabel(session: SesionCompra): string {
+  if (session.estado === "cancelada") return "Open session details"
   if (session.estado === "en_progreso") return "Manage live cart"
   // Creating the shipment is its own menu item now, done in place, so this
   // branch no longer claims to do it -- it only opens the order.
@@ -449,13 +467,20 @@ function ReadOnlyOrderDetails({ session, isAdmin, onReopen }: { session: SesionC
 }
 
 /**
- * The commission rate for this order, set before or during the call.
+ * The commission rate for this order, as a pre-set before or during the call.
  *
- * Deliberately not part of the close dialog, where the up-front split lives.
- * The customer watches their cart price itself live, so a rate that only
- * appeared at close would show them 15% for the whole session and then move the
- * total at the end -- which reads as a bait and switch even when the seller and
- * the customer agreed 25% on the phone that morning.
+ * The rate is *confirmed* in the close dialog, because closing is the moment
+ * the customer is first shown a total -- their screen carries the merchandise
+ * subtotal during the call and nothing else. This card stays because the rate
+ * is agreed before the call and a seller who knows it can settle it up front;
+ * both write the same field, and closing locks it.
+ *
+ * It used to be the only place the rate could be set, on the reasoning that a
+ * rate first appearing at close would move a total the customer had watched
+ * build. That reasoning was right about the risk and wrong about the remedy:
+ * nothing obliged the seller to use this card, so every session that was not
+ * the default 15% was repriced mid-call in front of the customer anyway. The
+ * total is now withheld until it is final instead.
  */
 /**
  * Whether the seller's product echoes will actually reach this customer.
@@ -466,15 +491,42 @@ function ReadOnlyOrderDetails({ session, isAdmin, onReopen }: { session: SesionC
  * waiting -- so the state is shown before the first product is added, while
  * there is still time to ask them to tap the button on their screen.
  */
-function WhatsAppStatusCard({ window, customerName }: { window: WhatsAppWindowState; customerName: string }) {
+function WhatsAppStatusCard({ window, customerName, updatesRequested }: { window: WhatsAppWindowState; customerName: string; updatesRequested: boolean }) {
   const firstName = customerName.split(" ")[0] || customerName
-  return <Alert variant={window.open ? "default" : "destructive"}>
+
+  if (window.open) {
+    return <Alert>
+      <WhatsAppIcon className="size-4" />
+      <AlertTitle>WhatsApp chat is open</AlertTitle>
+      <AlertDescription>Products you add are also sent to {firstName} on WhatsApp.</AlertDescription>
+    </Alert>
+  }
+
+  // The customer tapped the button on their order page, so WhatsApp opened for
+  // them with the message prefilled -- but WhatsApp never sends on anyone's
+  // behalf, and only their sent message reaches our webhook and opens Meta's
+  // window. Distinguished from the case below because the two need opposite
+  // actions from the seller, and telling someone to tap a button they have
+  // already tapped is worse than saying nothing.
+  if (updatesRequested) {
+    return <Alert>
+      <WhatsAppIcon className="size-4" />
+      <AlertTitle>Waiting for {firstName}&apos;s first message</AlertTitle>
+      <AlertDescription>
+        They opened WhatsApp from their order page with the message ready; they still have to press send. If this does not clear once they have sent it, inbound messages are not reaching the app — the Meta webhook subscription is what to check, not the customer. The cart on their screen updates either way.
+      </AlertDescription>
+    </Alert>
+  }
+
+  // Not an error: this is the ordinary state of a session before the customer
+  // has asked for anything. It was styled `destructive`, so every session
+  // opened on a red alert for a feature that is optional and that the cart does
+  // not depend on.
+  return <Alert>
     <WhatsAppIcon className="size-4" />
-    <AlertTitle>{window.open ? "WhatsApp chat is open" : "WhatsApp chat is not open"}</AlertTitle>
+    <AlertTitle>WhatsApp chat is not open</AlertTitle>
     <AlertDescription>
-      {window.open
-        ? `Products you add are also sent to ${firstName} on WhatsApp.`
-        : `${firstName} has not messaged us, so WhatsApp cannot receive the cart. Ask them to tap "Abrir chat de WhatsApp" on their order page. The cart on their screen updates either way.`}
+      {firstName} has not asked for their cart on WhatsApp, so Meta will refuse every send. Ask them to tap &quot;Abrir chat de WhatsApp&quot; on their order page. The cart on their screen updates either way.
     </AlertDescription>
   </Alert>
 }
@@ -530,18 +582,24 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100
 }
 
-function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }: { session: SesionCompra; open: boolean; onOpenChange: (open: boolean) => void; onConfirm: (initialPercentage: number) => Promise<void>; isActive: boolean }) {
+function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }: { session: SesionCompra; open: boolean; onOpenChange: (open: boolean) => void; onConfirm: (initialPercentage: number, commissionPercentage: number) => Promise<void>; isActive: boolean }) {
   const [percentage, setPercentage] = useState(String(session.porcentajeInicial || DEFAULT_INITIAL_PERCENTAGE))
+  const [commission, setCommission] = useState(String(round2(session.tasaComision * 100)))
 
   if (!isActive) return null
 
+  const parsedCommission = Number(commission)
+  const commissionValid = isValidCommissionPercentage(parsedCommission)
+
   const subtotal = session.productos.reduce((sum, product) => sum + product.precio * product.cantidad, 0)
   const tax = subtotal * session.tasaImpuesto
-  const fee = subtotal * session.tasaComision
+  // Priced off the rate in this dialog, not the one on the session, so the
+  // seller sees the invoice the customer is about to be shown.
+  const fee = subtotal * (commissionValid ? parsedCommission / 100 : session.tasaComision)
   const total = subtotal + tax + fee
 
   const parsed = Number(percentage)
-  const valid = isValidPercentage(parsed)
+  const valid = isValidPercentage(parsed) && commissionValid
   const upFront = valid ? initialAmount(total, parsed) : 0
   const onDelivery = valid ? finalAmount(total, parsed) : 0
 
@@ -557,7 +615,30 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
       <DialogHeader className="shrink-0 space-y-1.5 border-b px-6 py-4 text-left"><DialogTitle>Close session and create invoice?</DialogTitle><DialogDescription>This action locks the cart totals and starts the customer’s payment step. Check the invoice and the split before confirming.</DialogDescription></DialogHeader>
 
       <div className="dialog-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
-      <div className="space-y-3 rounded-lg bg-muted/60 p-4 text-sm"><div className="flex justify-between gap-4"><span>Items</span><span className="font-medium">{session.productos.reduce((sum, product) => sum + product.cantidad, 0)}</span></div><div className="flex justify-between gap-4"><span>Subtotal</span><span>{formatCurrency(subtotal)}</span></div><div className="flex justify-between gap-4"><span>Florida tax ({formatPercent(session.tasaImpuesto)})</span><span>{formatCurrency(tax)}</span></div><div className="flex justify-between gap-4"><span>Brash3D fee ({formatPercent(session.tasaComision)})</span><span>{formatCurrency(fee)}</span></div><div className="flex justify-between gap-4 border-t pt-3 text-base font-bold"><span>Total invoice</span><span>{formatCurrency(total)}</span></div></div>
+      <div className="space-y-3 rounded-lg bg-muted/60 p-4 text-sm"><div className="flex justify-between gap-4"><span>Items</span><span className="font-medium">{session.productos.reduce((sum, product) => sum + product.cantidad, 0)}</span></div><div className="flex justify-between gap-4"><span>Subtotal</span><span>{formatCurrency(subtotal)}</span></div><div className="flex justify-between gap-4"><span>Florida tax ({formatPercent(session.tasaImpuesto)})</span><span>{formatCurrency(tax)}</span></div><div className="flex justify-between gap-4"><span>Brash3D fee ({commissionValid ? `${round2(parsedCommission)}%` : formatPercent(session.tasaComision)})</span><span>{formatCurrency(fee)}</span></div><div className="flex justify-between gap-4 border-t pt-3 text-base font-bold"><span>Total invoice</span><span>{formatCurrency(total)}</span></div></div>
+
+      {/*
+        Confirmed here rather than only in the panel, because closing is the
+        moment the customer is first shown a total: their screen carries the
+        merchandise subtotal during the call and nothing else. So the rate is
+        settled in the same act that reveals the invoice, and locked by it.
+      */}
+      <div className="space-y-3">
+        <div className="space-y-1">
+          <Label htmlFor="close-commission">Brash3D commission</Label>
+          <p className="text-xs text-muted-foreground">The rate agreed with this customer. It is locked once this invoice is created.</p>
+        </div>
+        <div className="grid grid-cols-4 gap-2">
+          {[10, 15, 20, 30].map((preset) => (
+            <Button key={preset} type="button" size="sm" variant={round2(parsedCommission) === preset ? "default" : "outline"} onClick={() => setCommission(String(preset))}>{preset}%</Button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <Input id="close-commission" type="number" min="0" max="99" step="0.5" inputMode="decimal" className="h-9 w-24" value={commission} onChange={(event) => setCommission(event.target.value)} />
+          <span className="text-sm text-muted-foreground">% commission</span>
+        </div>
+        {!commissionValid && <p className="text-sm text-destructive">Enter a commission between 0 and 99.</p>}
+      </div>
 
       <div className="space-y-3">
         <div className="space-y-1">
@@ -573,7 +654,7 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
           <Input id="initial-percentage" type="number" min={MINIMUM_INITIAL_PERCENTAGE} max="100" step="1" inputMode="numeric" className="h-9 w-24" value={percentage} onChange={(event) => setPercentage(event.target.value)} />
           <span className="text-sm text-muted-foreground">% up front</span>
         </div>
-        {!valid ? <p className="text-sm text-destructive">Enter a percentage between {MINIMUM_INITIAL_PERCENTAGE} and 100.</p> : <div className="space-y-1 border-t pt-3 text-sm">
+        {!isValidPercentage(parsed) ? <p className="text-sm text-destructive">Enter a percentage between {MINIMUM_INITIAL_PERCENTAGE} and 100.</p> : !valid ? null : <div className="space-y-1 border-t pt-3 text-sm">
           <div className="flex justify-between gap-4"><span className="text-muted-foreground">Customer pays now</span><span className="font-semibold">{formatCurrency(upFront)}</span></div>
           <div className="flex justify-between gap-4"><span className="text-muted-foreground">{onDelivery > 0 ? "Collected on delivery" : "Nothing to collect on delivery"}</span><span className="font-semibold">{formatCurrency(onDelivery)}</span></div>
         </div>}
@@ -582,7 +663,50 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
       <div className="space-y-1 border-t pt-4 text-sm"><p className="font-medium">Products</p><div className="space-y-1 text-muted-foreground">{session.productos.map((product) => <p key={product.id}>{product.nombre} × {product.cantidad}</p>)}</div></div>
       </div>
 
-      <DialogFooter className="shrink-0 gap-2 border-t px-6 py-4"><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="button" variant="destructive" disabled={!valid} onClick={() => void onConfirm(parsed)}>Confirm and create invoice</Button></DialogFooter>
+      <DialogFooter className="shrink-0 gap-2 border-t px-6 py-4"><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button type="button" variant="destructive" disabled={!valid} onClick={() => void onConfirm(parsed, parsedCommission)}>Confirm and create invoice</Button></DialogFooter>
+    </DialogContent>
+  </Dialog>
+}
+
+/**
+ * Ending a session in which the customer bought nothing.
+ *
+ * Offered only when the cart is empty, where "Close session and invoice" is
+ * disabled and the seller previously had no way out at all: the session stayed
+ * `en_progreso` for good, counted as live work on the Overview, and left the
+ * customer looking at a cart that would never resolve. Liking nothing at an
+ * outlet is an ordinary outcome, not a failure state.
+ */
+function EndWithoutPurchaseDialog({ customerName, onConfirm }: { customerName: string; onConfirm: () => Promise<void> }) {
+  const [open, setOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+
+  async function confirm() {
+    setError("")
+    setSaving(true)
+    try {
+      await onConfirm()
+      setOpen(false)
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Unable to end the session")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <Dialog open={open} onOpenChange={setOpen}>
+    <DialogTrigger asChild><Button className="w-full" variant="outline"><X />End session without a purchase</Button></DialogTrigger>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>End this session without a purchase?</DialogTitle>
+        <DialogDescription>{customerName} bought nothing, so no invoice is created and there is nothing further to pay. The 20 USD booking fee already charged is not affected. This cannot be undone.</DialogDescription>
+      </DialogHeader>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <DialogFooter className="gap-2">
+        <Button type="button" variant="outline" onClick={() => setOpen(false)}>Keep session open</Button>
+        <Button type="button" variant="destructive" disabled={saving} onClick={() => void confirm()}>{saving ? "Ending…" : "End without a purchase"}</Button>
+      </DialogFooter>
     </DialogContent>
   </Dialog>
 }
@@ -693,11 +817,24 @@ function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewH
 }
 
 export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
-  const { session, loading, error, addProduct, updateQuantity, removeProduct, close, setCommission, reopenForCorrection, start, updateDeliveryStatus, whatsappNumber, whatsappWindow } = useSession(sessionId)
+  const { session, loading, error, addProduct, updateQuantity, removeProduct, close, cancelWithoutPurchase, setCommission, reopenForCorrection, start, updateDeliveryStatus, whatsappNumber, whatsappWindow } = useSession(sessionId)
   const [sessions, setSessions] = useState<SesionCompra[]>([])
   const [notifications, setNotifications] = useState<StaffNotification[]>([])
-  const [activeNotificationId, setActiveNotificationId] = useState<string | null>(null)
-  const [dismissedNotificationIds, setDismissedNotificationIds] = useState<string[]>([])
+  /**
+   * Notifications waiting to be shown, oldest first, displayed one at a time.
+   *
+   * Seeded empty and fed only by arrivals the panel has not seen before, so
+   * signing in never replays history. It used to toast every unread row the
+   * API returned -- and nothing ever marked one read, so with a backlog of
+   * 1,460 the seller was met by the newest twenty in a row, five seconds each,
+   * on every single sign-in, and got the same twenty again the next time. A
+   * toast means "this just happened"; the backlog belongs in the bell, which
+   * is where it already is.
+   */
+  const [toastQueue, setToastQueue] = useState<string[]>([])
+  // Every notification id the panel has already accounted for. A ref, not
+  // state, because the poll must not restart the interval each time it grows.
+  const seenNotificationIds = useRef<Set<string> | null>(null)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [boxes, setBoxes] = useState<ConsolidatedBoxManifest[]>([])
   const [slots, setSlots] = useState<TimeSlot[]>([])
@@ -714,7 +851,7 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
   const [pagePerTab, setPagePerTab] = useState<{ tab: DashboardTab; page: number }>({ tab: activeTab, page: 1 })
   const page = pagePerTab.tab === activeTab ? pagePerTab.page : 1
   const setPage = useCallback((next: number) => setPagePerTab({ tab: activeTab, page: next }), [activeTab])
-  const [bookingFilter, setBookingFilter] = useState<BookingFilter>("upcoming")
+  const [bookingFilter, setBookingFilter] = useState<BookingFilter>("open")
   const [bookingSearch, setBookingSearch] = useState("")
   const [bookingFilterDate, setBookingFilterDate] = useState("")
   const [sessionSearch, setSessionSearch] = useState("")
@@ -773,22 +910,41 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
       if (notificationsResponse.ok) {
         const nextNotifications = ((await notificationsResponse.json()) as { notifications: StaffNotification[] }).notifications
         setNotifications(nextNotifications)
-        setActiveNotificationId((current) => current || nextNotifications.find((item) => !item.read && !dismissedNotificationIds.includes(item.id))?.id || null)
+        if (seenNotificationIds.current === null) {
+          // First load. Everything already there is history, not news.
+          seenNotificationIds.current = new Set(nextNotifications.map((item) => item.id))
+        } else {
+          const seen = seenNotificationIds.current
+          // The API answers newest first; the queue plays oldest first, so a
+          // burst of payments arrives in the order it happened.
+          const arrived = nextNotifications.filter((item) => !seen.has(item.id) && !item.read).reverse()
+          if (arrived.length) {
+            for (const item of arrived) seen.add(item.id)
+            // Capped so a burst cannot hold the corner for minutes. Anything
+            // beyond the cap is still in the bell, unread and counted.
+            setToastQueue((current) => [...current, ...arrived.map((item) => item.id)].slice(-MAX_QUEUED_TOASTS))
+          }
+          for (const item of nextNotifications) seen.add(item.id)
+        }
       }
       if (shippingResponse.ok) setBoxes(((await shippingResponse.json()) as { boxes: ConsolidatedBoxManifest[] }).boxes)
     }
     void loadDashboard()
     const timer = window.setInterval(() => void loadDashboard(), 5000)
     return () => window.clearInterval(timer)
-  }, [dismissedNotificationIds, sessionId])
+  }, [sessionId])
 
+  // The toast at the head of the queue holds the corner for a few seconds and
+  // then hands it to the next one. Marked read on the way out: it was on
+  // screen while the seller was at the panel, so the bell's count stays
+  // truthful and the same notification never returns.
+  const activeNotificationId = toastQueue[0] ?? null
   useEffect(() => {
     if (!activeNotificationId) return
-    const notificationId = activeNotificationId
     const timer = window.setTimeout(() => {
-      setDismissedNotificationIds((current) => current.includes(notificationId) ? current : [...current, notificationId])
-      setActiveNotificationId(null)
-    }, 5000)
+      void markNotificationRead(activeNotificationId)
+      setToastQueue((current) => current.filter((id) => id !== activeNotificationId))
+    }, TOAST_VISIBLE_MS)
     return () => window.clearTimeout(timer)
   }, [activeNotificationId])
 
@@ -831,6 +987,22 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
         return leftUpcoming ? left - right : right - left
       })
   }, [sessions, bookingFilter, bookingSearch, bookingFilterDate])
+  // Counted against the same search and date narrowing the table uses, so a
+  // badge always matches what clicking it shows.
+  const bookingFilterCounts = useMemo(() => {
+    const now = new Date()
+    const search = bookingSearch.trim().toLowerCase()
+    const narrowed = sessions.filter((item) => {
+      const scheduled = new Date(item.fechaHoraProgramada || item.fechaInicio)
+      const matchesSearch = !search || [item.cliente.nombre, item.cliente.email, item.cliente.telefono]
+        .some((value) => value.toLowerCase().includes(search))
+      const matchesDate = !bookingFilterDate || scheduled.toLocaleDateString("en-CA") === bookingFilterDate
+      return matchesSearch && matchesDate
+    })
+    return Object.fromEntries(
+      BOOKING_FILTERS.map((filter) => [filter, narrowed.filter((item) => matchesBookingFilter(item, filter, now)).length])
+    ) as Record<BookingFilter, number>
+  }, [sessions, bookingSearch, bookingFilterDate])
   const nextBookingId = filteredBookings.find((item) => new Date(item.fechaHoraProgramada || item.fechaInicio) >= new Date() && item.bookingEstado !== "cancelada")?.id
   const shoppingSessions = useMemo(() => sessions.filter((item) => Boolean(item.startedAt) || item.estado === "completada"), [sessions])
   const filteredSessions = useMemo(() => {
@@ -849,19 +1021,17 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
     })
     if (response.ok) setNotifications((current) => current.map((item) => item.id === id ? { ...item, read: true } : item))
     if (response.ok) {
-      setDismissedNotificationIds((current) => current.includes(id) ? current : [...current, id])
-      setActiveNotificationId((current) => current === id ? null : current)
+      setToastQueue((current) => current.filter((queued) => queued !== id))
     }
   }
 
   async function markAllNotificationsRead() {
     await Promise.all(notifications.filter((item) => !item.read).map((item) => markNotificationRead(item.id)))
-    setActiveNotificationId(null)
+    setToastQueue([])
   }
 
   function dismissNotificationToast(id: string) {
-    setDismissedNotificationIds((current) => current.includes(id) ? current : [...current, id])
-    setActiveNotificationId((current) => current === id ? null : current)
+    setToastQueue((current) => current.filter((queued) => queued !== id))
   }
 
   async function clearNotification(id: string) {
@@ -883,8 +1053,7 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
     })
     if (!response.ok) return
     setNotifications([])
-    setDismissedNotificationIds([])
-    setActiveNotificationId(null)
+    setToastQueue([])
   }
 
   async function refreshShippingData() {
@@ -1083,14 +1252,19 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
       }
     }
 
-    async function confirmCloseSession(initialPercentage: number) {
+    async function confirmCloseSession(initialPercentage: number, commissionPercentage: number) {
       setActionError("")
       try {
-        await close(initialPercentage)
+        await close(initialPercentage, commissionPercentage)
         setCloseDialogOpen(false)
       } catch (caughtError) {
         setActionError(caughtError instanceof Error ? caughtError.message : "Unable to close session")
       }
+    }
+
+    async function endWithoutPurchase() {
+      setActionError("")
+      await cancelWithoutPurchase()
     }
 
     async function reopenClosedSession() {
@@ -1114,9 +1288,9 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
             <div className="min-w-0 space-y-6">
               {isWaiting && <Card><CardHeader><CardTitle>Session waiting to start</CardTitle><CardDescription>{scheduledAt.toLocaleString(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })} · {session.outlet}</CardDescription></CardHeader><CardContent className="space-y-3"><Button className="w-full" size="lg" disabled={!canStart} onClick={() => void beginSession()}><WhatsAppIcon />Start live session</Button>{!canStart && <p className="text-center text-xs text-muted-foreground">The booking payment must be confirmed before this session can start.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}
               {isActive && <Card><CardHeader><CardTitle className="text-xl">Add product</CardTitle><CardDescription>Cart changes sync to the customer screen.</CardDescription></CardHeader><CardContent><form onSubmit={submitProduct} className="grid gap-3 sm:grid-cols-2"><div className="space-y-2 sm:col-span-2"><Label htmlFor="product-name">Product name</Label><Input id="product-name" name="nombre" required /></div><div className="space-y-2"><Label htmlFor="product-sku">SKU</Label><Input id="product-sku" name="sku" /></div><div className="space-y-2"><Label htmlFor="product-price">Price USD</Label><Input id="product-price" name="precio" type="number" min="0.01" step="0.01" required /></div><div className="space-y-2"><Label htmlFor="product-quantity">Quantity</Label><Input id="product-quantity" name="cantidad" type="number" min="1" defaultValue="1" /></div><div className="space-y-2"><Label htmlFor="product-notes">Notes</Label><Input id="product-notes" name="notas" /></div>{actionError && <p className="text-sm text-destructive sm:col-span-2">{actionError}</p>}<Button className="sm:col-span-2"><Plus />Add to cart</Button></form></CardContent></Card>}
-              {session.estado === "completada" ? <ReadOnlyOrderDetails session={session} isAdmin={isAdmin} onReopen={reopenClosedSession} /> : <Card><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ShoppingCart />Cart ({session.productos.length})</CardTitle></CardHeader><CardContent className="space-y-3">{session.productos.length === 0 && <p className="py-8 text-center text-muted-foreground">No products yet.</p>}{session.productos.map((product) => <div key={product.id} className="flex items-center gap-3 rounded-md bg-muted p-3"><div className="min-w-0 flex-1"><p className="truncate font-medium">{product.nombre}</p><p className="text-xs text-muted-foreground">{product.sku || "No SKU"}{product.notas ? ` · ${product.notas}` : ""}</p></div><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, -1)}><Minus /></Button><span>{product.cantidad}</span><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, 1)}><Plus /></Button><strong className="w-24 text-right">{formatCurrency(product.precio * product.cantidad)}</strong><Button size="icon" variant="ghost" onClick={() => void removeProduct(product.id)}><Trash2 /></Button></div>)}</CardContent></Card>}
+              {session.estado === "cancelada" ? <Card><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><X className="size-5" />Session ended without a purchase</CardTitle><CardDescription>{session.cliente.nombre} bought nothing during this session, so no invoice was created and there is nothing to ship or collect. The booking fee already charged is unaffected.</CardDescription></CardHeader></Card> : session.estado === "completada" ? <ReadOnlyOrderDetails session={session} isAdmin={isAdmin} onReopen={reopenClosedSession} /> : <Card><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ShoppingCart />Cart ({session.productos.length})</CardTitle></CardHeader><CardContent className="space-y-3">{session.productos.length === 0 && <p className="py-8 text-center text-muted-foreground">No products yet.</p>}{session.productos.map((product) => <div key={product.id} className="flex items-center gap-3 rounded-md bg-muted p-3"><div className="min-w-0 flex-1"><p className="truncate font-medium">{product.nombre}</p><p className="text-xs text-muted-foreground">{product.sku || "No SKU"}{product.notas ? ` · ${product.notas}` : ""}</p></div><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, -1)}><Minus /></Button><span>{product.cantidad}</span><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, 1)}><Plus /></Button><strong className="w-24 text-right">{formatCurrency(product.precio * product.cantidad)}</strong><Button size="icon" variant="ghost" onClick={() => void removeProduct(product.id)}><Trash2 /></Button></div>)}</CardContent></Card>}
             </div>
-            <aside className="min-w-0 space-y-6">{isActive && whatsappNumber && whatsappWindow && <WhatsAppStatusCard window={whatsappWindow} customerName={session.cliente.nombre} />}{session.estado === "en_progreso" && <CommissionCard session={session} onChange={updateCommission} />}<Card><CardHeader><CardTitle className="text-xl">Order summary</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(session.subtotal)}</span></div><div className="flex justify-between"><span>Tax {formatPercent(session.tasaImpuesto)}</span><span>{formatCurrency(session.impuesto)}</span></div><div className="flex justify-between"><span>Fee {formatPercent(session.tasaComision)}</span><span>{formatCurrency(session.comision)}</span></div><div className="flex justify-between pt-3 text-lg font-bold"><span>Total</span><span>{formatCurrency(session.total)}</span></div></CardContent></Card>{session.estado === "completada" && <Card><CardHeader><CardTitle className="text-xl">Customer delivery</CardTitle><CardDescription>{session.envio ? `Current status: ${shipmentStatusLabel(session.envio.estado)}` : "Create the shipment after the customer's up-front payment is confirmed."}</CardDescription></CardHeader><CardContent className="space-y-3">{session.deliveryAddress && <div className="rounded-md bg-muted p-3 text-sm"><p className="font-medium">Confirmed delivery address</p><p className="mt-1 text-muted-foreground">{session.deliveryAddress}</p><p className="text-muted-foreground">{session.deliveryCity}, {session.cliente.pais}</p></div>}{session.envio?.labelCode && <div className="rounded-md border p-3 text-sm"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><div className="min-w-0"><p className="text-xs text-muted-foreground">Customer shipment code</p><p className="mt-1 break-all font-mono font-semibold">{session.envio.labelCode}</p></div><Button type="button" size="sm" variant="outline" className="min-w-24 shrink-0 justify-center" onClick={() => void copyShipmentCode()}><Copy />{shipmentCodeCopied ? "Copied" : "Copy code"}</Button></div></div>}{nextDeliveryStep && hasInitialPayment(session) && <Button className="w-full" disabled={!session.deliveryAddress || !session.deliveryCity} onClick={() => void createShipment()}><Package />{nextDeliveryStep.label}</Button>}{!nextDeliveryStep && session.envio?.estado === "entregado" && <Badge><CheckCircle2 />Delivery confirmed</Badge>}{session.envio && session.envio.estado !== "entregado" && <p className="text-xs text-muted-foreground">USA operations handles consolidation. The local team owns receipt, final payment, and delivery confirmation.</p>}{!hasInitialPayment(session) && <p className="text-xs text-muted-foreground">Waiting for the customer to confirm their address and pay the up-front amount.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}<CloseSessionDialog session={session} open={closeDialogOpen} onOpenChange={setCloseDialogOpen} onConfirm={confirmCloseSession} isActive={isActive} /></aside>
+            <aside className="min-w-0 space-y-6">{isActive && whatsappNumber && whatsappWindow && <WhatsAppStatusCard window={whatsappWindow} customerName={session.cliente.nombre} updatesRequested={session.whatsappUpdates} />}{session.estado === "en_progreso" && <CommissionCard session={session} onChange={updateCommission} />}{session.estado !== "cancelada" && <Card><CardHeader><CardTitle className="text-xl">Order summary</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(session.subtotal)}</span></div><div className="flex justify-between"><span>Tax {formatPercent(session.tasaImpuesto)}</span><span>{formatCurrency(session.impuesto)}</span></div><div className="flex justify-between"><span>Fee {formatPercent(session.tasaComision)}</span><span>{formatCurrency(session.comision)}</span></div><div className="flex justify-between pt-3 text-lg font-bold"><span>Total</span><span>{formatCurrency(session.total)}</span></div></CardContent></Card>}{session.estado === "completada" && <Card><CardHeader><CardTitle className="text-xl">Customer delivery</CardTitle><CardDescription>{session.envio ? `Current status: ${shipmentStatusLabel(session.envio.estado)}` : "Create the shipment after the customer's up-front payment is confirmed."}</CardDescription></CardHeader><CardContent className="space-y-3">{session.deliveryAddress && <div className="rounded-md bg-muted p-3 text-sm"><p className="font-medium">Confirmed delivery address</p><p className="mt-1 text-muted-foreground">{session.deliveryAddress}</p><p className="text-muted-foreground">{session.deliveryCity}, {session.cliente.pais}</p></div>}{session.envio?.labelCode && <div className="rounded-md border p-3 text-sm"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><div className="min-w-0"><p className="text-xs text-muted-foreground">Customer shipment code</p><p className="mt-1 break-all font-mono font-semibold">{session.envio.labelCode}</p></div><Button type="button" size="sm" variant="outline" className="min-w-24 shrink-0 justify-center" onClick={() => void copyShipmentCode()}><Copy />{shipmentCodeCopied ? "Copied" : "Copy code"}</Button></div></div>}{nextDeliveryStep && hasInitialPayment(session) && <Button className="w-full" disabled={!session.deliveryAddress || !session.deliveryCity} onClick={() => void createShipment()}><Package />{nextDeliveryStep.label}</Button>}{!nextDeliveryStep && session.envio?.estado === "entregado" && <Badge><CheckCircle2 />Delivery confirmed</Badge>}{session.envio && session.envio.estado !== "entregado" && <p className="text-xs text-muted-foreground">USA operations handles consolidation. The local team owns receipt, final payment, and delivery confirmation.</p>}{!hasInitialPayment(session) && <p className="text-xs text-muted-foreground">Waiting for the customer to confirm their address and pay the up-front amount.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}<CloseSessionDialog session={session} open={closeDialogOpen} onOpenChange={setCloseDialogOpen} onConfirm={confirmCloseSession} isActive={isActive} />{isActive && session.productos.length === 0 && <EndWithoutPurchaseDialog customerName={session.cliente.nombre} onConfirm={endWithoutPurchase} />}</aside>
           </div>
         </SidebarInset>
       </SidebarProvider>
@@ -1186,7 +1360,12 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
           {historyCustomerId ? <CustomerPurchaseHistoryDetail history={customerHistory} loading={historyLoading} error={historyError} onBack={closeCustomerHistory} /> : <>
           {activeTab === "overview" && <OverviewDashboard sessions={sessions} boxes={boxes} />}
           {activeTab === "shipping" && <ShippingOperations boxes={boxes} readyShipments={readyShipments} selectedShipments={selectedShipments} courier={boxCourier} tracking={boxTracking} message={shippingMessage} onCourierChange={setBoxCourier} onTrackingChange={setBoxTracking} onToggleShipment={(id) => setSelectedShipments((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])} onCreateBox={createConsolidatedBox} onAssignShipments={assignShipmentsToBox} onDispatchBox={dispatchConsolidatedBox} />}
-          {activeTab === "bookings" && <TableCard title="Bookings" description="Scheduled appointments and booking-payment readiness."><div className="space-y-3 border-b px-4 pb-4"><div className="flex flex-wrap gap-2">{(["upcoming", "today", "payment_pending", "in_progress", "completed", "all"] as BookingFilter[]).map((filter) => <Button key={filter} size="sm" variant={bookingFilter === filter ? "default" : "outline"} onClick={() => { setBookingFilter(filter); setPage(1) }}>{filter.replaceAll("_", " ")}</Button>)}</div><div className="grid gap-2 sm:grid-cols-[1fr_190px_auto]"><Input aria-label="Search bookings" placeholder="Search name, phone, or email" value={bookingSearch} onChange={(event) => { setBookingSearch(event.target.value); setPage(1) }} /><Input aria-label="Filter bookings by date" type="date" value={bookingFilterDate} onChange={(event) => { setBookingFilterDate(event.target.value); setPage(1) }} /><Button variant="ghost" disabled={!bookingSearch && !bookingFilterDate} onClick={() => { setBookingSearch(""); setBookingFilterDate(""); setPage(1) }}>Clear</Button></div><p className="text-xs text-muted-foreground">{filteredBookings.length} matching booking{filteredBookings.length === 1 ? "" : "s"} · nearest upcoming first</p></div><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>Appointment</TableHead><TableHead>Booking fee</TableHead><TableHead>Status</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell><div className="flex items-center gap-2"><p className="font-medium">{item.cliente.nombre}</p>{item.id === nextBookingId && <Badge variant="outline">Next</Badge>}</div><p className="text-xs text-muted-foreground">{item.cliente.telefono}</p></TableCell><TableCell className="whitespace-nowrap"><p className="font-medium">{item.horaProgramada || "—"}</p><p className="text-xs text-muted-foreground">{item.fechaProgramada ? formatDate(item.fechaProgramada) : "—"}</p></TableCell><TableCell>{item.bookingEstado === "confirmada" || item.bookingEstado === "completada" ? <Badge><CheckCircle2 />{item.bookingFee > 0 ? "$20 paid" : "Referral reward"}</Badge> : <Badge variant="outline">Pending</Badge>}</TableCell><TableCell><BookingStage session={item} /></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredBookings.length} onChange={setPage} /></TableCard>}
+          {activeTab === "bookings" && <TableCard title="Bookings" description="Scheduled appointments and booking-payment readiness."><div className="space-y-3 border-b px-4 pb-4"><div className="flex flex-wrap gap-2">{BOOKING_FILTERS.map((filter) => <Button key={filter} size="sm" variant={bookingFilter === filter ? "default" : "outline"} onClick={() => { setBookingFilter(filter); setPage(1) }}>{BOOKING_FILTER_LABELS[filter].label}<span className="ml-1.5 text-xs opacity-70 tabular-nums">{bookingFilterCounts[filter]}</span></Button>)}</div>
+          {/* The counts and this line exist because two of these filters
+              overlap on purpose -- a booking later today is both Open and
+              Today -- and nothing said so, which made the difference look
+              like a bug. */}
+          <p className="text-xs text-muted-foreground">{BOOKING_FILTER_LABELS[bookingFilter].hint}</p><div className="grid gap-2 sm:grid-cols-[1fr_190px_auto]"><Input aria-label="Search bookings" placeholder="Search name, phone, or email" value={bookingSearch} onChange={(event) => { setBookingSearch(event.target.value); setPage(1) }} /><Input aria-label="Filter bookings by date" type="date" value={bookingFilterDate} onChange={(event) => { setBookingFilterDate(event.target.value); setPage(1) }} /><Button variant="ghost" disabled={!bookingSearch && !bookingFilterDate} onClick={() => { setBookingSearch(""); setBookingFilterDate(""); setPage(1) }}>Clear</Button></div><p className="text-xs text-muted-foreground">{filteredBookings.length} matching booking{filteredBookings.length === 1 ? "" : "s"} · nearest upcoming first</p></div><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>Appointment</TableHead><TableHead>Booking fee</TableHead><TableHead>Status</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell><div className="flex items-center gap-2"><p className="font-medium">{item.cliente.nombre}</p>{item.id === nextBookingId && <Badge variant="outline">Next</Badge>}</div><p className="text-xs text-muted-foreground">{item.cliente.telefono}</p></TableCell><TableCell className="whitespace-nowrap"><p className="font-medium">{item.horaProgramada || "—"}</p><p className="text-xs text-muted-foreground">{item.fechaProgramada ? formatDate(item.fechaProgramada) : "—"}</p></TableCell><TableCell>{item.bookingEstado === "confirmada" || item.bookingEstado === "completada" ? <Badge><CheckCircle2 />{item.bookingFee > 0 ? "$20 paid" : "Referral reward"}</Badge> : <Badge variant="outline">Pending</Badge>}</TableCell><TableCell><BookingStage session={item} /></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredBookings.length} onChange={setPage} /></TableCard>}
           {activeTab === "customers" && <TableCard title="Customers" description="Customers with a booking or shopping session."><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>WhatsApp</TableHead><TableHead>City</TableHead><TableHead>Last activity</TableHead><TableHead className="text-right">Latest order</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.clienteId}><TableCell><p className="font-medium">{item.cliente.nombre}</p><p className="text-xs text-muted-foreground">{item.cliente.email}</p></TableCell><TableCell>{item.cliente.telefono}</TableCell><TableCell>{item.cliente.ciudad || item.cliente.pais}</TableCell><TableCell>{formatDateTime(item.fechaInicio)}</TableCell><TableCell className="text-right font-medium">{formatCurrency(item.total)}</TableCell><TableCell className="text-right"><RowActions session={item} onViewHistory={openCustomerHistory} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={customers.length} onChange={setPage} /></TableCard>}
           {activeTab === "sessions" && <TableCard title="Shopping sessions" description="Customer sessions and shipment progress."><div className="border-b px-4 py-4"><Input aria-label="Search sessions" placeholder="Search customer, session ID, or shipment code" value={sessionSearch} onChange={(event) => { setSessionSearch(event.target.value); setPage(1) }} /></div><p className="border-b px-4 py-3 text-xs text-muted-foreground">{filteredSessions.length} matching session{filteredSessions.length === 1 ? "" : "s"}</p><Table className="!w-full !table-fixed [&_th]:!py-2 [&_td]:!py-2"><TableHeader><TableRow><TableHead className="w-[13%]">Session ID</TableHead><TableHead className="w-[14%]">Date</TableHead><TableHead className="w-[21%]">Customer</TableHead><TableHead className="w-[20%]">Assignment</TableHead><TableHead className="w-[20%]">Order stage</TableHead><TableHead className="w-[24%]">Shipment code</TableHead><TableHead className="w-[8%] text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell title={item.id} className="font-mono text-xs">{item.id.slice(-8).toUpperCase()}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDateTime(item.fechaHoraProgramada || item.fechaInicio)}</TableCell><TableCell>{item.cliente.nombre}</TableCell><TableCell><p className="text-sm font-medium">{item.vendedor.nombre}</p><p className="text-xs text-muted-foreground">{item.vendedor.tiendaAsignada || "Assigned seller"}</p></TableCell><TableCell className="whitespace-nowrap"><OrderStage session={item} /></TableCell><TableCell title={item.envio?.labelCode || "—"} className="max-w-48 font-mono text-xs"><span className="block truncate">{item.envio?.labelCode || "—"}</span></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table><TablePagination page={page} total={filteredSessions.length} onChange={setPage} /></TableCard>}
           </>}

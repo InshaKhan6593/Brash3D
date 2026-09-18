@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
-import { AlertTriangle, Banknote, CheckCircle2, Clipboard, CreditCard, FileText, Landmark, LogOut, MoreHorizontal, PackageCheck, Phone, Wallet } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { AlertTriangle, Banknote, CheckCircle2, ChevronDown, Clipboard, CreditCard, FileText, Landmark, LogOut, MoreHorizontal, PackageCheck, Phone, Wallet } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -13,6 +13,7 @@ import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import type { BoxSettlement, ConsolidatedBoxManifest, LocalTeamIdentity, SesionCompra } from "@/lib/types"
+import { DELIVERED_QUEUE_DAYS } from "@/lib/local-team"
 import { outstandingBalance } from "@/lib/payment-split"
 import { countryFor } from "@/lib/countries"
 import { intlLocale } from "@/lib/i18n/locale"
@@ -27,6 +28,16 @@ type DeliveryFilter = "all" | "awaiting_payment" | "ready_for_handover" | "deliv
 /** Order is deliberate: the queue the team works through, most urgent first. */
 const DELIVERY_FILTERS: readonly DeliveryFilter[] = ["all", "awaiting_payment", "ready_for_handover", "delivered"]
 
+/**
+ * Deliveries rendered at once.
+ *
+ * The list was rendered whole, and the team reads it on a phone between stops.
+ * Every row carries the customer's products, so a day's work built a DOM that
+ * had to be scrolled past to reach anything -- and the panel repaints it every
+ * five seconds.
+ */
+const DELIVERIES_PER_PAGE = 15
+
 function balanceFor(session: SesionCompra): number {
   return outstandingBalance(session.total, session.porcentajeInicial, session.montoPagadoFinal)
 }
@@ -39,9 +50,17 @@ function deliveryFilterFor(session: SesionCompra): DeliveryFilter {
   return "awaiting_payment"
 }
 
+/**
+ * The badge on a row, derived from the same classification the filters use.
+ *
+ * It repeated `deliveryFilterFor`'s three conditions verbatim, so a change to
+ * one had to be mirrored in the other by hand -- and a row could sit under
+ * "Listas para entregar" while its own badge read something else.
+ */
 function deliveryStatusLabel(session: SesionCompra, t: Messages): string {
-  if (session.envio?.estado === "entregado") return t.localTeam.status.delivered
-  if (session.montoPagadoFinal > 0 || balanceFor(session) === 0) return t.localTeam.status.ready
+  const bucket = deliveryFilterFor(session)
+  if (bucket === "delivered") return t.localTeam.status.delivered
+  if (bucket === "ready_for_handover") return t.localTeam.status.ready
   return t.localTeam.status.awaitingPayment
 }
 
@@ -247,7 +266,7 @@ function BoxDetails({ box, t, dateLocale, onReceive }: { box: ConsolidatedBoxMan
       </div>
       <div className="hidden shrink-0 text-right text-sm sm:block"><p>{t.localTeam.customers(box.customerCount)}</p><p className="text-xs text-muted-foreground">{t.localTeam.units(box.totalUnits)}</p></div>
       <Badge variant={box.status === "enviada" ? "secondary" : "outline"} className="shrink-0">{boxStatusLabel(box.status, t)}</Badge>
-      <span className="text-xs text-muted-foreground transition-transform group-open:rotate-180">⌄</span>
+      <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
     </summary>
     <div className="space-y-3 border-t bg-muted/20 px-4 py-3">
       <div className="divide-y rounded-md border bg-background">
@@ -328,6 +347,7 @@ export function LocalTeamPanel() {
   const [receivedBoxes, setReceivedBoxes] = useState<ConsolidatedBoxManifest[]>([])
   const [view, setView] = useState<OperationsView>("incoming")
   const [filter, setFilter] = useState<DeliveryFilter>("all")
+  const [page, setPage] = useState(1)
   const [selectedDelivery, setSelectedDelivery] = useState<SesionCompra | null>(null)
   // The collection awaiting confirmation. Held here rather than per row so one
   // dialog serves both the row menu and the detail sheet.
@@ -408,8 +428,26 @@ export function LocalTeamPanel() {
   // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a soft navigation is exactly what breaks here.
   async function logout() { await fetch("/api/auth/logout", { method: "POST" }); window.location.assign("/login") }
 
-  const visibleDeliveries = filter === "all" ? deliveries : deliveries.filter((session) => deliveryFilterFor(session) === filter)
-  const counts = DELIVERY_FILTERS.reduce<Record<DeliveryFilter, number>>((result, value) => { result[value] = value === "all" ? deliveries.length : deliveries.filter((session) => deliveryFilterFor(session) === value).length; return result }, { all: 0, awaiting_payment: 0, ready_for_handover: 0, delivered: 0 })
+  // Both derived in one pass and memoised: `deliveryFilterFor` was called five
+  // times per delivery on every render, and this panel re-renders every five
+  // seconds whether or not anything changed.
+  const { visibleDeliveries, counts } = useMemo(() => {
+    const tally: Record<DeliveryFilter, number> = { all: deliveries.length, awaiting_payment: 0, ready_for_handover: 0, delivered: 0 }
+    const matching: SesionCompra[] = []
+    for (const session of deliveries) {
+      const bucket = deliveryFilterFor(session)
+      tally[bucket] += 1
+      if (filter === "all" || bucket === filter) matching.push(session)
+    }
+    return { visibleDeliveries: matching, counts: tally }
+  }, [deliveries, filter])
+
+  const pageCount = Math.max(1, Math.ceil(visibleDeliveries.length / DELIVERIES_PER_PAGE))
+  // Clamped rather than reset by an effect, which would render the empty page
+  // once before correcting it. A filter that shrinks the list simply pulls the
+  // current page back to the last one that exists.
+  const currentPage = Math.min(page, pageCount)
+  const pagedDeliveries = visibleDeliveries.slice((currentPage - 1) * DELIVERIES_PER_PAGE, currentPage * DELIVERIES_PER_PAGE)
   // The team is in the destination country, so Spanish formats dates the way
   // they read them locally; English falls back to US formatting.
   const dateLocale = intlLocale(locale, countryFor(team?.country).locale)
@@ -419,7 +457,17 @@ export function LocalTeamPanel() {
     <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 lg:px-8">
       {message && <Alert><Clipboard /><AlertTitle>{t.localTeam.updateTitle}</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>}
       <div className="flex flex-wrap gap-2 border-b pb-3"><Button variant={view === "incoming" ? "default" : "outline"} onClick={() => setView("incoming")}><PackageCheck />{t.localTeam.incoming} <span className="ml-1 opacity-70">{incomingBoxes.length}</span></Button><Button variant={view === "received" ? "default" : "outline"} onClick={() => setView("received")}><CheckCircle2 />{t.localTeam.received} <span className="ml-1 opacity-70">{receivedBoxes.length}</span></Button><Button variant={view === "deliveries" ? "default" : "outline"} onClick={() => setView("deliveries")}>{t.localTeam.deliveries} <span className="ml-1 opacity-70">{deliveries.length}</span></Button></div>
-      {view === "incoming" ? <BoxListSection title={t.localTeam.incomingTitle} description={t.localTeam.incomingBody} boxes={incomingBoxes} emptyMessage={t.localTeam.incomingEmpty} t={t} dateLocale={dateLocale} onReceive={(box) => receiveBox(box.id, box.number)} /> : view === "received" ? <BoxListSection title={t.localTeam.receivedTitle} description={t.localTeam.receivedBody} boxes={receivedBoxes} emptyMessage={t.localTeam.receivedEmpty} t={t} dateLocale={dateLocale} /> : <section className="overflow-hidden rounded-lg border bg-background"><div className="border-b px-4 py-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">{t.localTeam.deliveries}</h2><p className="text-sm text-muted-foreground">{t.localTeam.deliveriesBody}</p></div><Badge variant="outline">{t.localTeam.onScreen(visibleDeliveries.length)}</Badge></div><div className="mt-4 flex flex-wrap gap-2">{DELIVERY_FILTERS.map((value) => <Button key={value} size="sm" variant={filter === value ? "default" : "outline"} onClick={() => setFilter(value)}>{t.localTeam.filters[value]}<span className="ml-1 opacity-70">{counts[value]}</span></Button>)}</div></div>{visibleDeliveries.length === 0 ? <p className="px-6 py-10 text-center text-sm text-muted-foreground">{deliveries.length === 0 ? t.localTeam.deliveriesEmpty : t.localTeam.noMatch}</p> : <div className="divide-y">{visibleDeliveries.map((item) => { const waitingForPayment = deliveryFilterFor(item) === "awaiting_payment"; const delivered = deliveryFilterFor(item) === "delivered"; const balance = balanceFor(item); return <div key={item.id} className="grid gap-4 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto]"><div className="min-w-0"><p className="truncate font-medium" title={item.cliente.nombre}>{item.cliente.nombre}</p><p className="truncate text-sm text-muted-foreground">{item.deliveryCity || item.envio?.deliveryCity || item.cliente.ciudad} · {t.session.items(item.productos.length)}</p><a href={whatsappLink(item.cliente.telefono)} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()} className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:underline"><Phone className="size-3" />{item.cliente.telefono}</a><p className="mt-1 truncate text-xs text-muted-foreground" title={item.envio?.labelCode || undefined}>{item.envio?.labelCode || t.localTeam.sheet.labelPending}</p>{item.requiresLocalInvoice && <Badge variant="outline" className="mt-1.5"><FileText />{t.localTeam.requiresLocalInvoice}</Badge>}</div><div className="flex flex-wrap items-center justify-between gap-3 sm:min-w-72 sm:justify-end"><div className="min-w-0 text-left sm:text-right"><p className="whitespace-nowrap font-semibold">{balanceLabel(balance, t)}</p><div className="flex flex-wrap items-center gap-2 sm:justify-end"><Badge variant={delivered ? "outline" : "secondary"}>{deliveryStatusLabel(item, t)}</Badge>{paymentMethodLabel(item, t) && <span className="truncate text-xs text-muted-foreground">{paymentMethodLabel(item, t)}</span>}</div></div><Button size="sm" variant="outline" onClick={() => setSelectedDelivery(item)}>{t.localTeam.viewOrder}</Button>{!waitingForPayment && !delivered && balance === 0 && item.envio?.estado === "recibido_equipo_local" && <Button size="sm" onClick={() => void runAction({ action: "confirmDeliveryWithoutBalance", sessionId: item.id })}><CheckCircle2 />{t.localTeam.sheet.confirmDelivery}</Button>}{waitingForPayment && <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={t.localTeam.actionsFor(item.cliente.nombre)}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuLabel>{t.localTeam.collectBalanceMenu}</DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => void finalStripe(item.id)}><CreditCard />{t.localTeam.sheet.copyStripeLink}</DropdownMenuItem><DropdownMenuItem onSelect={() => setPendingOffline({ session: item, method: "efectivo" })}><Banknote />{t.localTeam.sheet.cashReceived}</DropdownMenuItem><DropdownMenuItem className="text-muted-foreground" onSelect={() => setPendingOffline({ session: item, method: "transferencia" })}><Landmark />{t.localTeam.sheet.transfer}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div></div> })}</div>}</section>}
+      {view === "incoming" ? <BoxListSection title={t.localTeam.incomingTitle} description={t.localTeam.incomingBody} boxes={incomingBoxes} emptyMessage={t.localTeam.incomingEmpty} t={t} dateLocale={dateLocale} onReceive={(box) => receiveBox(box.id, box.number)} /> : view === "received" ? <BoxListSection title={t.localTeam.receivedTitle} description={t.localTeam.receivedBody} boxes={receivedBoxes} emptyMessage={t.localTeam.receivedEmpty} t={t} dateLocale={dateLocale} /> : <section className="overflow-hidden rounded-lg border bg-background"><div className="border-b px-4 py-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-semibold">{t.localTeam.deliveries}</h2><p className="text-sm text-muted-foreground">{t.localTeam.deliveriesBody}</p></div></div><div className="mt-4 flex flex-wrap gap-2">{DELIVERY_FILTERS.map((value) => <Button key={value} size="sm" variant={filter === value ? "default" : "outline"} onClick={() => { setFilter(value); setPage(1) }}>{t.localTeam.filters[value]}<span className="ml-1 opacity-70">{counts[value]}</span></Button>)}</div></div>{visibleDeliveries.length === 0 ? <p className="px-6 py-10 text-center text-sm text-muted-foreground">{deliveries.length === 0 ? t.localTeam.deliveriesEmpty : t.localTeam.noMatch}</p> : <div className="divide-y">{pagedDeliveries.map((item) => { const waitingForPayment = deliveryFilterFor(item) === "awaiting_payment"; const delivered = deliveryFilterFor(item) === "delivered"; const balance = balanceFor(item); const method = paymentMethodLabel(item, t); return <div key={item.id} className="grid gap-4 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto]"><div className="min-w-0"><p className="truncate font-medium" title={item.cliente.nombre}>{item.cliente.nombre}</p><p className="truncate text-sm text-muted-foreground">{item.deliveryCity || item.envio?.deliveryCity || item.cliente.ciudad} · {t.session.items(item.productos.length)}</p><a href={whatsappLink(item.cliente.telefono)} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()} className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground underline-offset-2 hover:underline"><Phone className="size-3" />{item.cliente.telefono}</a><p className="mt-1 truncate text-xs text-muted-foreground" title={item.envio?.labelCode || undefined}>{item.envio?.labelCode || t.localTeam.sheet.labelPending}</p>{item.requiresLocalInvoice && <Badge variant="outline" className="mt-1.5"><FileText />{t.localTeam.requiresLocalInvoice}</Badge>}</div><div className="flex flex-wrap items-center justify-between gap-3 sm:min-w-72 sm:justify-end"><div className="min-w-0 text-left sm:text-right"><p className="whitespace-nowrap font-semibold">{balanceLabel(balance, t)}</p><div className="flex flex-wrap items-center gap-2 sm:justify-end"><Badge variant={delivered ? "outline" : "secondary"}>{deliveryStatusLabel(item, t)}</Badge>{method && <span className="truncate text-xs text-muted-foreground">{method}</span>}</div></div><Button size="sm" variant="outline" onClick={() => setSelectedDelivery(item)}>{t.localTeam.viewOrder}</Button>{!waitingForPayment && !delivered && balance === 0 && item.envio?.estado === "recibido_equipo_local" && <Button size="sm" onClick={() => void runAction({ action: "confirmDeliveryWithoutBalance", sessionId: item.id })}><CheckCircle2 />{t.localTeam.sheet.confirmDelivery}</Button>}{waitingForPayment && <DropdownMenu><DropdownMenuTrigger asChild><Button variant="ghost" size="icon" aria-label={t.localTeam.actionsFor(item.cliente.nombre)}><MoreHorizontal /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuLabel>{t.localTeam.collectBalanceMenu}</DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => void finalStripe(item.id)}><CreditCard />{t.localTeam.sheet.copyStripeLink}</DropdownMenuItem><DropdownMenuItem onSelect={() => setPendingOffline({ session: item, method: "efectivo" })}><Banknote />{t.localTeam.sheet.cashReceived}</DropdownMenuItem><DropdownMenuItem className="text-muted-foreground" onSelect={() => setPendingOffline({ session: item, method: "transferencia" })}><Landmark />{t.localTeam.sheet.transfer}</DropdownMenuItem></DropdownMenuContent></DropdownMenu>}</div></div> })}</div>}{visibleDeliveries.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3">
+      <div className="text-xs text-muted-foreground">
+        <p>{t.localTeam.showingRange((currentPage - 1) * DELIVERIES_PER_PAGE + 1, Math.min(currentPage * DELIVERIES_PER_PAGE, visibleDeliveries.length), visibleDeliveries.length)}</p>
+        <p className="mt-0.5">{t.localTeam.deliveredWindow(DELIVERED_QUEUE_DAYS)}</p>
+      </div>
+      {pageCount > 1 && <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>{t.localTeam.previousPage}</Button>
+        <span className="text-xs tabular-nums text-muted-foreground">{t.localTeam.pageOf(currentPage, pageCount)}</span>
+        <Button size="sm" variant="outline" disabled={currentPage >= pageCount} onClick={() => setPage(currentPage + 1)}>{t.localTeam.nextPage}</Button>
+      </div>}
+    </div>}</section>}
       <DeliveryDetailsSheet session={selectedDelivery} t={t} boxNumber={[...incomingBoxes, ...receivedBoxes].find((box) => box.id === selectedDelivery?.envio?.cajaId)?.number} onOpenChange={(open) => { if (!open) setSelectedDelivery(null) }} onStripe={finalStripe} onOffline={(session, method) => setPendingOffline({ session, method })} onConfirmDelivery={(sessionId) => runAction({ action: "confirmDeliveryWithoutBalance", sessionId })} />
       <ConfirmOfflinePaymentDialog pending={pendingOffline} t={t} onCancel={() => setPendingOffline(null)} onConfirm={recordOfflinePayment} />
       <CopyToast state={toast} onDismiss={() => setToast(null)} />

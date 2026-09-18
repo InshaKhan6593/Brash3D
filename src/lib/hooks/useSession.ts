@@ -26,7 +26,9 @@ interface UseSessionReturn {
   addProduct: (product: Omit<Producto, "id" | "addedAt">) => Promise<void>
   updateQuantity: (productId: string, delta: number) => Promise<void>
   removeProduct: (productId: string) => Promise<void>
-  close: (initialPercentage: number) => Promise<void>
+  close: (initialPercentage: number, commissionPercentage?: number) => Promise<void>
+  /** Ends a session in which the customer bought nothing. No invoice is created. */
+  cancelWithoutPurchase: () => Promise<void>
   /** The commission this order is priced at, settable until the invoice closes. */
   setCommission: (commissionPercentage: number) => Promise<void>
   reopenForCorrection: () => Promise<void>
@@ -196,8 +198,14 @@ export function useSession(
     await mutate("removeProduct", { productId })
   }, [mutate])
 
-  const close = useCallback(async (initialPercentage: number) => {
-    await mutate("close", { initialPercentage })
+  const close = useCallback(async (initialPercentage: number, commissionPercentage?: number) => {
+    await mutate("close", commissionPercentage === undefined
+      ? { initialPercentage }
+      : { initialPercentage, commissionPercentage })
+  }, [mutate])
+
+  const cancelWithoutPurchase = useCallback(async () => {
+    await mutate("cancelWithoutPurchase", {})
   }, [mutate])
 
   const setCommission = useCallback(async (commissionPercentage: number) => {
@@ -247,5 +255,5 @@ export function useSession(
     }
   }, [activeToken, sessionId])
 
-  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, setCommission, reopenForCorrection, start, updateDeliveryStatus, pay, refresh, recoveredToken, whatsappNumber, whatsappWindow }
+  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, cancelWithoutPurchase, setCommission, reopenForCorrection, start, updateDeliveryStatus, pay, refresh, recoveredToken, whatsappNumber, whatsappWindow }
 }

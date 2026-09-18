@@ -479,6 +479,22 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
     )
   }
 
+  // The session ran and the customer bought nothing. There is no invoice, no
+  // payment and no shipment, so every card below would render empty.
+  if (session.estado === "cancelada") {
+    return (
+      <div className="min-h-screen">
+        <CustomerHeader status="order" />
+        <main className="flex min-h-[75vh] items-center justify-center px-4 py-10">
+          <Card className="w-full max-w-xl text-center">
+            <CardHeader><Package className="mx-auto size-10 text-muted-foreground" /><CardTitle>{t.session.noPurchaseTitle}</CardTitle><CardDescription>{t.session.noPurchaseBody}</CardDescription></CardHeader>
+            <CardContent><Button asChild className="w-full"><Link href="/">{t.session.bookAnother}<ArrowRight /></Link></Button></CardContent>
+          </Card>
+        </main>
+      </div>
+    )
+  }
+
   if (!hasStarted && session.estado === "en_progreso") {
     const scheduledAt = new Date(session.fechaHoraProgramada || session.fechaInicio)
     const difference = scheduledAt.getTime() - now
@@ -607,17 +623,38 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
 
           <aside className="space-y-6 lg:sticky lg:top-24">
             <Card>
-              <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ReceiptText className="size-5" />{t.session.invoiceSummary}</CardTitle><CardDescription>{t.session.invoiceNote}</CardDescription></CardHeader>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ReceiptText className="size-5" />{isLive ? t.session.runningTotal : t.session.invoiceSummary}</CardTitle><CardDescription>{isLive ? t.session.runningTotalNote : t.session.invoiceNote}</CardDescription></CardHeader>
               <CardContent className="space-y-3">
                 <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t.session.merchandise}</span><span>{formatCurrency(session.subtotal)}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t.session.floridaTax(formatPercent(session.tasaImpuesto, dateLocale))}</span><span>{formatCurrency(session.impuesto)}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t.session.commission(formatPercent(session.tasaComision, dateLocale))}</span><span>{formatCurrency(session.comision)}</span></div>
-                <Separator />
-                <div className="flex justify-between text-lg font-bold"><span>{t.session.invoiceTotal}</span><span>{formatCurrency(session.total)}</span></div>
+                {/* Tax, commission and total are withheld until the seller
+                    closes the session. The commission is agreed per customer
+                    and confirmed at close, so a figure shown mid-call would be
+                    a provisional one that moves at the end -- which reads as a
+                    bait and switch even when both sides agreed the rate. The
+                    merchandise subtotal is real the moment a product lands, so
+                    the customer still watches their spend build. */}
+                {isLive ? (
+                  <>
+                    <Separator />
+                    <div className="flex justify-between text-lg font-bold"><span>{t.session.merchandiseTotal}</span><span>{formatCurrency(session.subtotal)}</span></div>
+                    <p className="text-xs text-muted-foreground">{t.session.taxesAtClose}</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t.session.floridaTax(formatPercent(session.tasaImpuesto, dateLocale))}</span><span>{formatCurrency(session.impuesto)}</span></div>
+                    <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t.session.commission(formatPercent(session.tasaComision, dateLocale))}</span><span>{formatCurrency(session.comision)}</span></div>
+                    <Separator />
+                    <div className="flex justify-between text-lg font-bold"><span>{t.session.invoiceTotal}</span><span>{formatCurrency(session.total)}</span></div>
+                  </>
+                )}
               </CardContent>
             </Card>
 
-            <Card>
+            {/* Hidden while the session is live for the same reason as the
+                total it is a share of: both amounts derive from a commission
+                and an up-front percentage the seller confirms at close, so
+                neither is a real figure yet. */}
+            {!isLive && <Card>
               <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><CreditCard className="size-5" />{t.session.paymentPlan}</CardTitle></CardHeader>
               <CardContent className="space-y-3">
                 <div className="rounded-md bg-muted p-4">
@@ -631,7 +668,7 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
                   {hasPaidInitial && !hasPaidFinal && !paidUpFront && <p className="mt-3 text-xs text-muted-foreground">{t.session.finalNote}</p>}{paidUpFront && <p className="mt-3 text-xs text-muted-foreground">{t.session.prepaidNote}</p>}
                 </div>
               </CardContent>
-            </Card>
+            </Card>}
 
             {!isLive && <Card>
               <CardContent className="flex gap-3 py-5">

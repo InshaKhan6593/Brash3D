@@ -13,6 +13,7 @@ import {
   addProductToSession,
   updateProductQuantity,
   removeProductFromSession,
+  cancelSessionWithoutPurchase,
   closeSession,
   reopenSessionForCorrection,
   rotateCustomerAccess,
@@ -221,12 +222,57 @@ async function POSTHandler(request: Request) {
         { status: 400 }
       )
     }
-    const session = await closeSession(sessionId, initialPercentage)
+    // Optional: the seller confirms the commission in the close dialog, which
+    // is the moment the customer is first shown a total. Omitted, the rate the
+    // session already carries stands.
+    const commissionPercentage = data.commissionPercentage === undefined
+      ? undefined
+      : Number(data.commissionPercentage)
+    if (commissionPercentage !== undefined && !isValidCommissionPercentage(commissionPercentage)) {
+      return NextResponse.json(
+        { error: "The commission must be at least 0% and below 100%" },
+        { status: 400 }
+      )
+    }
+    const session = await closeSession(sessionId, initialPercentage, commissionPercentage)
 
+    // Existence and ownership are settled above, so a null here is a state
+    // mismatch. An empty cart is the one worth naming separately: it has its
+    // own action, and a seller who reaches this has a session to end, not an
+    // invoice to create.
     if (!session) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 })
+      if (targetSession.estado !== "en_progreso") {
+        return NextResponse.json({ error: "This session is already closed" }, { status: 409 })
+      }
+      if (!targetSession.startedAt) {
+        return NextResponse.json({ error: "Start the session before closing it" }, { status: 409 })
+      }
+      return NextResponse.json(
+        { error: "This session has no products. End it without a purchase instead." },
+        { status: 409 }
+      )
     }
 
+    return NextResponse.json({ session })
+  }
+
+  // The customer bought nothing. An ordinary outcome at an outlet, and without
+  // it the appointment has no exit: `close` requires a total above zero, so an
+  // empty session stayed `en_progreso` indefinitely.
+  if (action === "cancelWithoutPurchase") {
+    const session = await cancelSessionWithoutPurchase(sessionId)
+    if (!session) {
+      if (targetSession.estado !== "en_progreso") {
+        return NextResponse.json({ error: "This session is already closed" }, { status: 409 })
+      }
+      if (!targetSession.startedAt) {
+        return NextResponse.json({ error: "Start the session before ending it" }, { status: 409 })
+      }
+      return NextResponse.json(
+        { error: "This session has products in its cart. Close it and invoice instead." },
+        { status: 409 }
+      )
+    }
     return NextResponse.json({ session })
   }
 

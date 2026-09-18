@@ -264,3 +264,48 @@ WHATSAPP_CLOUD_API_TOKEN=
 WHATSAPP_PHONE_NUMBER_ID=
 WHATSAPP_VERIFY_TOKEN=
 ```
+
+## When the chat never opens
+
+Two symptoms that look separate and are not: the customer taps the button, opens
+WhatsApp, sends the message — and no confirmation comes back, while the seller's
+panel goes on saying the chat is not open.
+
+Both are the same fact. The customer's sent message is the only thing that opens
+Meta's window, and the app learns of it in exactly one place: a `POST` to
+`/api/whatsapp/webhook`. The confirmation is answered from there, and the
+seller's indicator reads the row that handler writes. **If no inbound delivery
+arrives, neither can happen** — sending still works, and everything else about
+the order is unaffected, which is why this is easy to miss.
+
+Check it from the database first, because it is unambiguous:
+
+```sql
+SELECT wa_id, last_inbound_at FROM whatsapp_message_windows ORDER BY last_inbound_at DESC LIMIT 5;
+```
+
+Empty, after a customer has genuinely sent a message, means no delivery has ever
+been processed. In order of likelihood:
+
+1. **The app is not subscribed to the `messages` field.** Saving the callback
+   URL and passing the verification handshake is a *separate* step from ticking
+   the webhook fields, and the dashboard shows a green verified callback either
+   way. This is the most common cause by a distance. Meta Business → your app →
+   WhatsApp → Configuration → Webhook fields → subscribe to `messages`.
+2. **`WHATSAPP_APP_SECRET` is unset or does not match the app.** Every `POST` is
+   then answered 403 before it is read, by design — a webhook that cannot verify
+   its caller is an open write endpoint. Look for
+   `WhatsApp webhook signature verification failed` in the logs; it records
+   whether a secret was configured at all.
+3. **The callback points somewhere else.** An app has one webhook URL. If it is
+   aimed at a developer's tunnel, production receives nothing, and vice versa.
+4. **Running locally with no tunnel.** Meta cannot reach `localhost`. Inbound
+   will never work in local development without one, so the red indicator there
+   is expected rather than a fault.
+
+A subtler variant, worth knowing because it produces *half* the symptom: the
+window opens and the indicator clears, but no confirmation is sent.
+`liveSessionForWaId` matches the customer by the digits of their stored phone
+number against Meta's `wa_id`, and requires a live session that asked for
+updates. A number stored without its country code will not match the `wa_id`
+Meta sends, so the confirmation goes nowhere while everything else works.

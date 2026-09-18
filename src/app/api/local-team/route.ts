@@ -7,6 +7,9 @@ import { listLocalTeamDeliveries, takeOpenCheckoutForStage } from "@/lib/store/s
 import { getLocalTeam, listBoxManifests } from "@/lib/store/shippingStore"
 import { getStripe } from "@/lib/stripe"
 
+/** The box states the receiving team can act on: on its way, and arrived. */
+const LOCAL_TEAM_BOX_STATES = ["enviada", "recibida"] as const
+
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
@@ -20,12 +23,15 @@ async function GETHandler() {
   // difference is one team reading another country's customer addresses and
   // phone numbers.
   const scopedTeamId = staff.role === "local_team" ? staff.localTeamId : undefined
-  const [deliveries, boxes, team] = await Promise.all([
+  const [deliveries, visibleBoxes, team] = await Promise.all([
     listLocalTeamDeliveries(scopedTeamId),
-    listBoxManifests(undefined, scopedTeamId),
+    // The two states this panel acts on, narrowed in SQL. Filtering here
+    // instead selected from an already-limited list, so undispatched boxes --
+    // which is what accumulates while the seller prepares shipments -- pushed
+    // boxes genuinely in transit out of the result entirely.
+    listBoxManifests(undefined, scopedTeamId, LOCAL_TEAM_BOX_STATES),
     scopedTeamId ? getLocalTeam(scopedTeamId) : Promise.resolve(null),
   ])
-  const visibleBoxes = boxes.filter((box) => box.status === "enviada" || box.status === "recibida")
   return NextResponse.json({
     team,
     deliveries,

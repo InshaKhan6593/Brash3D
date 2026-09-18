@@ -30,7 +30,14 @@ export function settlementFor(sessions: SesionCompra[]): BoxSettlement {
 
     totals.collected += collected
     totals.pending += balance
-    if (collected > 0) totals.deliveredCount += 1
+    // Counted on the shipment's own state, not on whether money changed hands.
+    // An order paid 100% up front collects nothing at the door -- it is closed
+    // by `confirmDeliveryWithoutBalance`, which records no amount and no
+    // method -- so counting "collected > 0" as delivered left every prepaid
+    // order sitting in the pending column after it had been handed over. A box
+    // holding one could never reconcile: the summary read "2 of 3 delivered"
+    // with nothing left to do.
+    if (session.envio?.estado === "entregado") totals.deliveredCount += 1
     else totals.pendingCount += 1
 
     if (method === "stripe") totals.viaStripe += collected
@@ -60,8 +67,21 @@ export function settlementFor(sessions: SesionCompra[]): BoxSettlement {
   * every box is that team's, so it changes nothing today; the moment a second
   * country exists it is what stops one country's team reading another country's
   * customers, their addresses and their phone numbers.
+  *
+  * `statuses` narrows to the box states the caller can act on, and it has to be
+  * applied here rather than by the caller: the limit below is what makes this
+  * query bounded, and a filter applied after it selects from an already-cut
+  * list. The Colombia panel filtered in JavaScript, so thirty undispatched
+  * boxes -- which is simply what accumulates as the seller prepares shipments
+  * -- pushed every box in transit past the limit and the receiving team saw an
+  * empty screen with a package physically on its way to them. Reproduced: with
+  * 35 newer `pendiente` boxes, all three real ones disappeared.
   */
-export async function listBoxManifests(sellerId?: string, localTeamId?: string): Promise<ConsolidatedBoxManifest[]> {
+export async function listBoxManifests(
+  sellerId?: string,
+  localTeamId?: string,
+  statuses?: readonly string[]
+): Promise<ConsolidatedBoxManifest[]> {
   // The boxes come first because they bound the work: only sessions packed
   // into one of them can appear in a manifest. Reading every session and
   // discarding the rest is the same answer at many times the cost, and this
@@ -69,9 +89,10 @@ export async function listBoxManifests(sellerId?: string, localTeamId?: string):
   const boxes = await query<BoxRow>(`
     SELECT id::text, numero_caja, equipo_local_id::text, pais, courier, numero_guia, estado, created_at, recibida_at
     FROM cajas_consolidadas
-    WHERE $1::uuid IS NULL OR equipo_local_id = $1::uuid
+    WHERE ($1::uuid IS NULL OR equipo_local_id = $1::uuid)
+      AND ($2::text[] IS NULL OR estado::text = ANY($2::text[]))
     ORDER BY created_at DESC LIMIT 30
-  `, [localTeamId ?? null])
+  `, [localTeamId ?? null, statuses ? [...statuses] : null])
   const visibleSessions = await listSessionsInBoxes(boxes.rows.map((box) => box.id), sellerId)
 
   return boxes.rows.map((box) => {

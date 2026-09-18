@@ -18,7 +18,7 @@ designs and the 14-section technical specification).
 - Customer live cart and order-progress timeline, refreshed by polling.
 - Tax and commission rates configurable through `TAX_RATE_FL` and `FEE_RATE`, recorded per session so a rate change never reprices an invoice already quoted.
 - **Commission set per order, not per business.** The specification fixed it at 15% for everyone (§3, `FEE_RATE`); the client charges by the deal — 10% against a customer's budget, 15% on an ordinary split, 20 to 30% when Brash3D fronts the whole purchase. The seller now sets the rate from the live panel with 10/15/20/30 presets or any figure the database can store.
-- The control sits in the session panel rather than the close dialog, where the up-front split lives. The customer watches their cart price itself live, so a rate that only appeared at close would show them 15% for the whole session and then move the total at the end — which reads as a bait and switch even when both sides agreed 25% that morning. Setting it before the first product is added is the intended order, and the card says so.
+- The rate is confirmed in the close dialog, beside the up-front split, and can still be pre-set from the session panel for a seller who knows it before the call. Both write the same field. It was originally panel-only, to stop a rate first appearing at close from moving a total the customer had watched build — right about the risk, wrong about the remedy, since nothing obliged the seller to use it and every session that was not the default 15% was repriced mid-call anyway. The customer is no longer shown a total until it is final; see entry 17 in [Specification decisions](SPEC_DECISIONS.md).
 - Closing locks it with the rest of the invoice: `setCommissionRate` matches only an `en_progreso` session, so a repricing cannot move a total the customer has already been shown. Pinned by `src/lib/store/commission.test.ts`, along with the four rates the client named, the reprice of an existing cart, and the database range beneath the API's validation.
 - Admin-only session reopening for correction, recorded in an audit table.
 
@@ -114,6 +114,46 @@ designs and the 14-section technical specification).
 - The visible tab is a search parameter (`/seller?tab=shipping`), so every sidebar item is a real link.
 - It was component state, which left the sidebar nothing to link to: inside a live session panel all six items fell back to `<Link href="/seller">`, so clicking "Shipping" — or any other item — landed on Overview. Reloading the dashboard lost the tab too, and Back left the dashboard rather than returning to the previous tab.
 - Paging is stored against the tab it belongs to instead of being reset by an effect, so a tab change never renders the wrong page first.
+
+### The invoice arrives complete
+- The customer sees their line items and the merchandise subtotal during the call, and the full invoice -- tax, commission, total -- when the seller closes the session. The commission is confirmed in the close dialog, priced live against the cart.
+- Screen 4 of the approved design shows the whole breakdown live, and that was right when the commission was one rate for the whole business. Once the seller sets it per order (see "Live session"), every session that was not 15% had to be repriced mid-call in front of the customer. See entry 17 in [Specification decisions](SPEC_DECISIONS.md).
+- The control in the session panel stays, so the agreed rate can still be set before the first product. What changed is that the customer is no longer shown a total until it is final.
+- The payment plan is hidden during the session too: both figures are a share of a total that does not exist yet.
+
+### A session can end without a purchase
+- The customer liked nothing. An ordinary outcome, and there was no exit for it: `closeSession` requires `total > 0` and the close button is disabled on an empty cart, so the session stayed `en_progreso` for good -- counted as live work on the Overview, with the customer looking at a cart that would never resolve.
+- `cancelSessionWithoutPurchase` ends it as `cancelada`, which the schema already had. No invoice, no payment, no shipment; the booking fee already charged is untouched. Guarded on an empty cart in SQL so it can never discard an order with products in it.
+- A separate action rather than a branch of closing, because the two outcomes are not interchangeable. Pinned in both directions by `src/lib/store/no-purchase.test.ts`.
+- The "upcoming" filter keyed only on `completada`, so a no-purchase session would have stayed in the seller's default view permanently.
+
+### Settlement counted prepaid orders as pending forever
+- A box holding a fully prepaid order could never reconcile. `settlementFor` counted a delivery as done when money changed hands, but an order paid 100% up front collects nothing at the door -- `confirmDeliveryWithoutBalance` records no amount and no method -- so it stayed in the pending column after it had been handed over. A box of three read "2 de 3 entregas cobradas" with nothing left to do.
+- Counted on the shipment's own state now. The label was wrong too: it said *cobradas* (collected) for a figure that is a delivery count, and now says *completadas*.
+
+### Sign-in replayed the whole notification backlog
+- Every sign-in was met by twenty toasts in a row, five seconds each, and the same twenty again next time. Nothing ever marked a toast read, `GET /api/notifications` returns the twenty newest, and all of them were unread -- 1,460 rows on the demo database, none read.
+- A toast means "this just happened". The first load now establishes a baseline and only genuine arrivals are shown, one at a time, oldest first, capped so a burst of collections cannot hold the corner for minutes. Dismissing one marks it read, so it does not return; everything else stays in the bell, unread and counted.
+
+### Booking filters say what they select
+- The buttons were the enum keys with underscores swapped for spaces, and two of them lied. "Upcoming" never meant "in the future" -- it means unfinished, which is why an appointment from last week that nobody closed sat in it. It is now "Open".
+- "Today" and "Open" overlap by design: a booking later today is in both. Nothing said so, so the two counts disagreeing looked like a bug. Each button now carries its count and the active filter explains itself in a line beneath.
+
+### The Colombia panel could hide a box that was on its way
+- `listBoxManifests` took the 30 newest boxes in **any** state and the route filtered to `enviada`/`recibida` afterwards, so the filter selected from an already-cut list. Undispatched boxes are exactly what accumulates while the seller prepares shipments, so enough of them pushed every box in transit past the limit and the receiving team saw an empty screen with a package physically on its way to them. Reproduced against the development database: with 35 newer `pendiente` boxes, all three genuine ones disappeared.
+- The state filter moved into SQL, ahead of the limit. Pinned by `src/lib/store/local-team-bounds.test.ts`.
+
+### The delivery queue grew for the life of the company
+- `envios.estado = 'entregado'` is terminal and nothing ever clears it, and `listLocalTeamDeliveries` had no bound -- so the query returned every order the business had ever delivered, with all their product lines, on a five-second poll.
+- Deliveries already handed over now age out after 30 days (`DELIVERED_QUEUE_DAYS`). Work that is **not** finished is never cut: a package waiting in country stays on the queue however long it has been there, which is pinned by a test using a 400-day-old order.
+- A delivery that cannot be dated is kept rather than dropped. `COALESCE` falls through to `sesiones_compra.fecha_inicio`, which defaults to `now()` and is never null, so no row compares NULL and vanishes -- the failure this bound exists to prevent, not to introduce. Found by an existing test rather than by review.
+- The deliveries list is paginated at 15. The team reads it on a phone between stops, every row carries the customer's products, and the panel repaints the whole list every five seconds. Its filter counts and the visible slice are derived in one memoised pass instead of calling `deliveryFilterFor` five times per delivery per render.
+
+### Colombia panel wording and consistency
+- The row badge derived its own three conditions instead of reusing `deliveryFilterFor`, so a row could sit under "Listas para entregar" with a badge reading something else. It now reads the same classification the filters do.
+- Spanish agreement: the badge said "Entregado"/"Listo para entregar" for an *entrega*, disagreeing with the "Entregadas"/"Listas para entregar" chips beside it. Both are feminine now.
+- The box expander used a bare `⌄` character while every other icon on the screen is lucide; it renders differently across platforms and is now `ChevronDown`.
+- Dropped the header count that repeated the active filter chip and, once the list paginated, no longer matched what was on screen. The footer states the range and the retention window instead.
 
 ### Interface review
 A screen-by-screen pass over every page at desktop and 375 px, covering all five
