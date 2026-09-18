@@ -234,6 +234,7 @@ at, without writing anything.
 | Separate Node/Express backend (§1) | Next.js route handlers | One deployable unit; the specification allows "or Supabase Edge Functions", so the backend shape was left open. |
 | `reservar_slot()` Postgres RPC (§5) | The same locking inside a TypeScript transaction | Identical guarantees; keeps the hold logic beside the code that owns it. |
 | Spanish table and column names (§2) | Kept exactly as specified | Matches the business's internal language. |
+| `cajas_consolidadas` in the realtime publication (§2) | Publication holds `sesiones_compra`, `productos_carrito`, `reservas`, `envios` | Inert either way. Section 2 adds `cajas_consolidadas` under its own comment "the tables the customer listens to", but section 7 -- the only subscription in the specification -- never listens to it, and neither does the app. `reservas` sits in the publication instead and has deliberately been given no read policy by migration 018, so no client can see its rows. |
 
 ---
 

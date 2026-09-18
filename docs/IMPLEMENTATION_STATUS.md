@@ -202,17 +202,68 @@ change, but it needs no new mechanism.
 
 Still a product decision for the client: whether the Miami seller wants it.
 
-### 5. The Colombia panel still polls
-The customer's live cart now arrives over Supabase Realtime (see "Live session"),
+### 5. The Colombia panel polls, and the specification never asked otherwise
+The customer's live cart arrives over Supabase Realtime (see "Live session"),
 with polling kept underneath at 30 seconds because a socket can die quietly on a
-sleeping phone. The Colombia local-team panel still polls every 5 seconds. It is
-correct but chatty, and it is the one surface left where the specification's
-realtime model has not been applied.
+sleeping phone. The Colombia local-team panel polls every 5 seconds.
 
-### 6. Query efficiency in the operations panels
-`listBoxManifests` calls `listSessions()` and filters in JavaScript, and
-`/api/local-team` invokes that pair on every 5-second poll. Fine at current data
-volumes, worth scoping to the relevant sessions as history grows.
+An earlier version of this entry called that "the one surface left where the
+specification's realtime model has not been applied". That was wrong, and it
+overstated the work. The specification applies realtime to exactly one actor.
+Section 2's `alter publication` line carries its own comment -- "enable realtime
+on the tables the customer listens to" -- and section 7's `suscribirseACarrito`
+is the only subscription in all fourteen sections. Neither the seller panel
+(section 6) nor the local-team panel (screen 2, section 11) subscribes to
+anything; screen 2 is described as what the team opens once a consolidated box
+arrives, which is a per-box workflow rather than a live feed. The customer
+subscription is built and matches section 7 table for table. **There is no
+outstanding realtime requirement.**
+
+Putting the Colombia panel on Realtime is therefore a new feature, not a gap,
+and it is not a small one. The customer's socket works because
+`/api/realtime/token` mints a claim naming one session and migration 018's
+policies check it per row. The local-team panel would need a claim scoped by
+team, `GRANT SELECT` and policies on `cajas_consolidadas` (today deny-all, with
+no grant at all), and a token route minting from a staff session rather than a
+customer access token. It would not stream the panel either: its data is a
+filtered join, and a `postgres_changes` row event can only say "something
+changed, refetch". The realistic version replaces the timer with an
+event-driven refetch of the same endpoint.
+
+What actually mattered about the poll was its cost, which is item 6, and that is
+now fixed.
+
+### 6. Query efficiency in the operations panels -- done
+The 5-second poll used to read the whole of `sesiones_compra` twice. Its GET
+called `listSessions()` -- every session ever created, joined across five
+tables, plus a second query loading every product for all of them -- and then
+called `listBoxManifests`, which called `listSessions()` again. Four of the five
+queries behind each tick were unbounded, and the four conditions that actually
+select the delivery queue were applied in JavaScript afterwards.
+
+Both predicates moved into SQL. `listLocalTeamDeliveries` selects closed, paid
+orders whose box has reached the team, and `listSessionsInBoxes` loads only the
+sessions packed into the boxes a manifest is about to return. Every query behind
+the poll is now bounded, and all three use indexes that already existed
+(`idx_envios_caja`, `idx_envios_estado`, `idx_sesiones_estado`), so no migration
+was needed.
+
+`listBoxManifests` now reads its boxes before its sessions rather than in
+parallel, because the second query depends on the first. That is one extra
+round trip, and it is cheap on purpose: Vercel functions default to `iad1` and
+the Supabase project is `us-east-1`, so the hop is same-region, while the scan
+it replaces grows with every order the business ever takes.
+
+One latent bug closed on the way. The scoped delivery queue was filtered against
+the 30 most recent boxes, because that is the limit the manifest list happens to
+use. Nothing ever sets a box to `entregada`, so boxes accumulate in `recibida`
+indefinitely, and team number 31 onwards would have silently dropped out of
+Colombia's own delivery queue. The queue no longer depends on that limit.
+
+Pinned by `src/lib/store/local-team-queue.test.ts`: each of the four conditions
+in both directions, an already-delivered order staying visible, and -- the one
+that matters -- a second destination team proving one country cannot read
+another's customer addresses and phone numbers, while an admin still sees both.
 
 ### 7. Supabase Auth
 Row level security is enabled and verified (see Production hardening), and

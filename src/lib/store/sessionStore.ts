@@ -878,6 +878,19 @@ async function getSessionWithClient(
   return mapSession(row, products.get(row.id) || [])
 }
 
+// Every session listing runs the same two round trips -- the rows, then their
+// products -- so the only thing a caller varies is the predicate. Narrowing it
+// here rather than filtering the result in JavaScript is what keeps a panel
+// that polls from reading the whole table on every tick.
+async function selectSessions(where: string, values: unknown[]): Promise<SesionCompra[]> {
+  const result = await query<SessionRow>(
+    `${SESSION_SELECT}${where ? ` WHERE ${where}` : ""} ORDER BY sc.fecha_inicio DESC`,
+    values
+  )
+  const products = await loadProducts(query, result.rows.map((row) => row.id))
+  return result.rows.map((row) => mapSession(row, products.get(row.id) || []))
+}
+
 export async function listSessions(customerId?: string, sellerId?: string): Promise<SesionCompra[]> {
   const filters: string[] = []
   const values: string[] = []
@@ -889,10 +902,43 @@ export async function listSessions(customerId?: string, sellerId?: string): Prom
     values.push(sellerId)
     filters.push(`sc.vendedor_id = $${values.length}::uuid`)
   }
-  const where = filters.length ? ` WHERE ${filters.join(" AND ")}` : ""
-  const result = await query<SessionRow>(`${SESSION_SELECT}${where} ORDER BY sc.fecha_inicio DESC`, values)
-  const products = await loadProducts(query, result.rows.map((row) => row.id))
-  return result.rows.map((row) => mapSession(row, products.get(row.id) || []))
+  return selectSessions(filters.join(" AND "), values)
+}
+
+// The sessions whose shipment travels in one of the given boxes -- the packing
+// list behind a box manifest. `envios.caja_id` is NOT NULL, so a shipment
+// always belongs to exactly one box, and `idx_envios_caja` serves the lookup.
+export async function listSessionsInBoxes(boxIds: string[], sellerId?: string): Promise<SesionCompra[]> {
+  if (boxIds.length === 0) return []
+  const values: unknown[] = [boxIds]
+  const filters = ["e.caja_id = ANY($1::uuid[])"]
+  if (sellerId) {
+    values.push(sellerId)
+    filters.push(`sc.vendedor_id = $${values.length}::uuid`)
+  }
+  return selectSessions(filters.join(" AND "), values)
+}
+
+// The Colombia panel's delivery queue: closed, paid orders whose box has
+// reached the local team and which are therefore ready to hand over or already
+// handed over.
+//
+// With `localTeamId` the queue is scoped to boxes addressed to that team, which
+// is the boundary that stops one country's team reading another's customer
+// addresses and phone numbers. An admin oversees every destination and passes
+// nothing, which is why the box predicate is conditional rather than always on.
+export async function listLocalTeamDeliveries(localTeamId?: string): Promise<SesionCompra[]> {
+  return selectSessions(`
+    sc.estado = 'completada'
+    AND sc.monto_pagado_inicial > 0
+    AND e.estado IN ('recibido_equipo_local', 'entregado')
+    AND ($1::uuid IS NULL OR EXISTS (
+      SELECT 1 FROM cajas_consolidadas cb
+      WHERE cb.id = e.caja_id
+        AND cb.equipo_local_id = $1::uuid
+        AND cb.estado IN ('enviada', 'recibida')
+    ))
+  `, [localTeamId ?? null])
 }
 
 export async function getSession(id: string): Promise<SesionCompra | null> {

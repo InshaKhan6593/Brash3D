@@ -33,6 +33,22 @@ npm run dev
 
 `docker compose up -d` only starts PostgreSQL; `npm run db:migrate` owns the schema and tracks every applied file in `schema_migrations`.
 
+Which database each command talks to is decided by the env file Next loads, and
+no local command can reach production by accident:
+
+| File | Loaded by | Points at |
+| --- | --- | --- |
+| `.env.local` | `npm run dev`, `db:migrate`, `db:check` | Docker |
+| `.env.test` | `npm test` (Next skips `.env.local` when `NODE_ENV=test`) | Docker |
+| `.env.supabase` | nothing — named explicitly on the command line | Supabase |
+| `.env.vercel` | nothing — pushed to the host | Supabase |
+
+The test fixtures create and delete real customers, sessions and shipments, so
+the suite must never point at live data. To apply a migration to production,
+set `DATABASE_URL` and `DATABASE_SSL_CA_FILE` for that one command; the header
+of `.env.supabase` has both forms, and `npm run db:check` reports what is
+missing without writing anything.
+
 On PowerShell, use `Copy-Item .env.example .env.local` instead of `cp`. Replace the Stripe placeholders in `.env.local` directly. Never commit that file. PostgreSQL binds only to `127.0.0.1:5440`, and all numbered migrations are tracked in `supabase/migrations`.
 
 Open [http://localhost:3000](http://localhost:3000). The seller dashboard is available at [http://localhost:3000/seller](http://localhost:3000/seller).
@@ -337,4 +353,4 @@ Everything below is tracked in detail in [Implementation status](docs/IMPLEMENTA
 - **WhatsApp Cloud API notifications** — see [the plan](docs/WHATSAPP.md); a no-template, no-cost path exists that needs nothing from the client.
 - **Automatic courier tracking** — needs the client's chosen carrier and API. USA operations types the courier and tracking number today.
 - **A Spanish seller/admin dashboard** — the customer screens and the Colombia panel now switch between Spanish and English; the USA dashboard is English only. The translation layer is in place, so this is copy plus wiring rather than new machinery.
-- **Realtime updates** — the session views poll rather than subscribe.
+- **Realtime for the Colombia panel** — the customer's live cart is on Supabase Realtime; the local-team panel polls every 5 seconds. The specification never asked for a local-team subscription, so this is a new feature rather than an outstanding gap — see [Implementation status](docs/IMPLEMENTATION_STATUS.md) item 5.

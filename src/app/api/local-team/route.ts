@@ -3,7 +3,7 @@ import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff } from "@/lib/auth"
 import { transaction } from "@/lib/db"
 import { logger } from "@/lib/logger"
-import { listSessions, takeOpenCheckoutForStage } from "@/lib/store/sessionStore"
+import { listLocalTeamDeliveries, takeOpenCheckoutForStage } from "@/lib/store/sessionStore"
 import { getLocalTeam, listBoxManifests } from "@/lib/store/shippingStore"
 import { getStripe } from "@/lib/stripe"
 
@@ -20,19 +20,15 @@ async function GETHandler() {
   // difference is one team reading another country's customer addresses and
   // phone numbers.
   const scopedTeamId = staff.role === "local_team" ? staff.localTeamId : undefined
-  const [sessions, boxes, team] = await Promise.all([
-    listSessions(),
+  const [deliveries, boxes, team] = await Promise.all([
+    listLocalTeamDeliveries(scopedTeamId),
     listBoxManifests(undefined, scopedTeamId),
     scopedTeamId ? getLocalTeam(scopedTeamId) : Promise.resolve(null),
   ])
   const visibleBoxes = boxes.filter((box) => box.status === "enviada" || box.status === "recibida")
-  const visibleBoxIds = new Set(visibleBoxes.map((box) => box.id))
   return NextResponse.json({
     team,
-    deliveries: sessions.filter((session) => session.estado === "completada"
-      && session.montoPagadoInicial > 0
-      && (session.envio?.estado === "recibido_equipo_local" || session.envio?.estado === "entregado")
-      && (!scopedTeamId || (session.envio?.cajaId ? visibleBoxIds.has(session.envio.cajaId) : false))),
+    deliveries,
     boxes: visibleBoxes,
     incomingBoxes: visibleBoxes.filter((box) => box.status === "enviada"),
     receivedBoxes: visibleBoxes.filter((box) => box.status === "recibida"),

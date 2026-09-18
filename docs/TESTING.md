@@ -17,12 +17,23 @@ because the invoice and payment-split logic is SQL, so it needs
 fail with `ECONNREFUSED 127.0.0.1:5440` while the pure-logic tests still pass.
 
 **That address is the point, not an oversight.** The store tests create and
-delete rows, and `DATABASE_URL` in `.env.local` points at the hosted Supabase
-database. Next's env loader deliberately skips `.env.local` when `NODE_ENV` is
-`test`, so the suite never sees that URL and falls back to the local container
-in `src/lib/db.ts`. Do not "fix" the connection error by exporting a hosted
-`DATABASE_URL`: the fixtures would be created and dropped in the real database.
-Start Docker instead.
+delete real customers, sessions, boxes and shipments, so the suite must never
+reach a hosted database. Two things keep it local, and it is worth knowing both:
+
+- `.env.test` sets `DATABASE_URL` to the Docker container. Vitest sets
+  `NODE_ENV=test`, and `@next/env` reads `.env.test` under that mode while
+  deliberately skipping `.env.local`.
+- `src/lib/db.ts` falls back to the same URL when `DATABASE_URL` is unset
+  outside production.
+
+Before `.env.test` existed the second rule alone carried it, which worked only
+because no `.env.test` or `.env` was present -- isolation by absence. Creating
+either, or exporting `DATABASE_URL` in the shell, would have redirected the
+whole fixture suite silently. Now the target is written down.
+
+Do not "fix" a connection error by exporting a hosted `DATABASE_URL`. Start
+Docker instead. Production is reachable only by naming it explicitly on the
+command line, which is what `.env.supabase` documents.
 
 With the local development server running, execute the database-backed smoke tests:
 

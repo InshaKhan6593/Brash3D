@@ -12,12 +12,13 @@ export interface Fixtures {
   sessions: string[]
   slots: string[]
   boxes: string[]
+  localTeams: string[]
   staff: string[]
   webhookEvents: string[]
 }
 
 export function newFixtures(): Fixtures {
-  return { customers: [], bookings: [], sessions: [], slots: [], boxes: [], staff: [], webhookEvents: [] }
+  return { customers: [], bookings: [], sessions: [], slots: [], boxes: [], localTeams: [], staff: [], webhookEvents: [] }
 }
 
 let slotOffset = 0
@@ -118,7 +119,23 @@ export async function createShipment(
   return result.rows[0].id
 }
 
-export async function createBox(fixtures: Fixtures, estado = "recibida"): Promise<string> {
+// A second destination team, so a test can prove one team's panel does not
+// read another country's deliveries. The seeded `LOCAL_TEAM_ID` is Colombia.
+export async function createLocalTeam(fixtures: Fixtures, country: string): Promise<string> {
+  const result = await query<{ id: string }>(`
+    INSERT INTO equipos_locales (nombre, ciudad, pais)
+    VALUES ($1, $2, $3)
+    RETURNING id::text
+  `, [`Equipo ${country} ${randomUUID().slice(0, 8)}`, "Ciudad", country])
+  fixtures.localTeams.push(result.rows[0].id)
+  return result.rows[0].id
+}
+
+export async function createBox(
+  fixtures: Fixtures,
+  estado = "recibida",
+  teamId: string = LOCAL_TEAM_ID
+): Promise<string> {
   const result = await query<{ id: string }>(`
     INSERT INTO cajas_consolidadas (
       equipo_local_id, numero_caja, pais, courier, numero_guia, estado, recibida_at
@@ -126,13 +143,13 @@ export async function createBox(fixtures: Fixtures, estado = "recibida"): Promis
     VALUES ($1::uuid, $2, 'Colombia', 'Servientrega', $3, $4::caja_estado,
       CASE WHEN $4 = 'recibida' THEN now() ELSE NULL END)
     RETURNING id::text
-  `, [LOCAL_TEAM_ID, `VT-${randomUUID().slice(0, 8).toUpperCase()}`, `G-${randomUUID().slice(0, 8)}`, estado])
+  `, [teamId, `VT-${randomUUID().slice(0, 8).toUpperCase()}`, `G-${randomUUID().slice(0, 8)}`, estado])
   fixtures.boxes.push(result.rows[0].id)
   return result.rows[0].id
 }
 
 export async function cleanup(fixtures: Fixtures): Promise<void> {
-  const { sessions, bookings, customers, slots, boxes, staff, webhookEvents } = fixtures
+  const { sessions, bookings, customers, slots, boxes, localTeams, staff, webhookEvents } = fixtures
   await query("DELETE FROM stripe_webhook_events WHERE event_id = ANY($1::text[])", [webhookEvents])
   await query("DELETE FROM payment_logs WHERE sesion_id = ANY($1::uuid[])", [sessions])
   await query("DELETE FROM envios WHERE sesion_id = ANY($1::uuid[])", [sessions])
@@ -152,4 +169,5 @@ export async function cleanup(fixtures: Fixtures): Promise<void> {
   await query("DELETE FROM disponibilidad WHERE id = ANY($1::uuid[])", [slots])
   await query("DELETE FROM clientes WHERE id = ANY($1::uuid[])", [customers])
   await query("DELETE FROM staff_users WHERE id = ANY($1::uuid[])", [staff])
+  await query("DELETE FROM equipos_locales WHERE id = ANY($1::uuid[])", [localTeams])
 }

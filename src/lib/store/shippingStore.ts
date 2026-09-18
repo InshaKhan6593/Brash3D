@@ -3,7 +3,7 @@ import "server-only"
 import type { PoolClient, QueryResultRow } from "pg"
 import { query } from "@/lib/db"
 import { outstandingBalance } from "@/lib/payment-split"
-import { listSessions } from "@/lib/store/sessionStore"
+import { listSessionsInBoxes } from "@/lib/store/sessionStore"
 import { DEFAULT_COUNTRY } from "@/lib/countries"
 import type { BoxSettlement, ConsolidatedBoxManifest, SesionCompra } from "@/lib/types"
 
@@ -62,16 +62,17 @@ export function settlementFor(sessions: SesionCompra[]): BoxSettlement {
   * customers, their addresses and their phone numbers.
   */
 export async function listBoxManifests(sellerId?: string, localTeamId?: string): Promise<ConsolidatedBoxManifest[]> {
-  const [sessions, boxes] = await Promise.all([
-    listSessions(),
-    query<BoxRow>(`
-      SELECT id::text, numero_caja, equipo_local_id::text, pais, courier, numero_guia, estado, created_at, recibida_at
-      FROM cajas_consolidadas
-      WHERE $1::uuid IS NULL OR equipo_local_id = $1::uuid
-      ORDER BY created_at DESC LIMIT 30
-    `, [localTeamId ?? null]),
-  ])
-  const visibleSessions = sellerId ? sessions.filter((session) => session.vendedorId === sellerId) : sessions
+  // The boxes come first because they bound the work: only sessions packed
+  // into one of them can appear in a manifest. Reading every session and
+  // discarding the rest is the same answer at many times the cost, and this
+  // runs on the Colombia panel's poll.
+  const boxes = await query<BoxRow>(`
+    SELECT id::text, numero_caja, equipo_local_id::text, pais, courier, numero_guia, estado, created_at, recibida_at
+    FROM cajas_consolidadas
+    WHERE $1::uuid IS NULL OR equipo_local_id = $1::uuid
+    ORDER BY created_at DESC LIMIT 30
+  `, [localTeamId ?? null])
+  const visibleSessions = await listSessionsInBoxes(boxes.rows.map((box) => box.id), sellerId)
 
   return boxes.rows.map((box) => {
     const boxSessions = visibleSessions.filter((session) => session.envio?.cajaId === box.id)
