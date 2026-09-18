@@ -250,6 +250,19 @@ Still outstanding at deployment:
   secret; neither carries over from test.
 - Preview deployments share the production `DATABASE_URL`, so a preview build
   reads and writes live data. Harmless while the data is demo, not after.
+- **The WhatsApp credentials in production are a Meta test number**, which can
+  only reach five allowlisted phones. A booking made by anyone else confirms
+  normally and the confirmation message fails with Meta's `#131030`, logged and
+  invisible to the customer -- correct behaviour for a test number, and exactly
+  wrong once a real buyer books. They must be replaced with the client's
+  verified number before launch. The template names stay empty until his
+  templates are approved; unset means free text only, which is the right
+  default.
+- The Meta webhook points wherever inbound events are wanted, and an app has
+  only one URL. Production passes verification (`WHATSAPP_VERIFY_TOKEN` is set
+  there); a developer tunnel is the alternative while testing locally. Sending
+  does not depend on it -- only the seller panel's "chat is open" indicator
+  does.
 
 See the production checklist in `README.md`.
 
