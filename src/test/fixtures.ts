@@ -158,11 +158,15 @@ export async function cleanup(fixtures: Fixtures): Promise<void> {
   await query("DELETE FROM productos_carrito WHERE sesion_id = ANY($1::uuid[])", [sessions])
   await query("DELETE FROM customer_session_access WHERE session_id = ANY($1::uuid[])", [sessions])
   await query("DELETE FROM session_audit_events WHERE session_id = ANY($1::uuid[])", [sessions])
+  // Detached before the rewards are deleted, not after. A *redeemed* reward is
+  // referenced by the booking it paid for, so deleting it first trips
+  // `reservas_recompensa_referido_id_fkey` and the whole cleanup aborts. It
+  // went unnoticed because no test had ever spent a reward.
+  await query("UPDATE reservas SET recompensa_referido_id = NULL WHERE id = ANY($1::uuid[])", [bookings])
   await query(
     "DELETE FROM referidos_recompensas WHERE referidor_id = ANY($1::uuid[]) OR referido_id = ANY($1::uuid[])",
     [customers]
   )
-  await query("UPDATE reservas SET recompensa_referido_id = NULL WHERE id = ANY($1::uuid[])", [bookings])
   await query("DELETE FROM sesiones_compra WHERE id = ANY($1::uuid[])", [sessions])
   await query("DELETE FROM staff_notifications WHERE reserva_id = ANY($1::uuid[])", [bookings])
   await query("DELETE FROM reservas WHERE id = ANY($1::uuid[])", [bookings])

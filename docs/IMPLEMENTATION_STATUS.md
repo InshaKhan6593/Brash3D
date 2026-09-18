@@ -162,6 +162,12 @@ designs and the 14-section technical specification).
 - Focus returns to the product name after each add, and the price and quantity inputs ask for numeric keypads, so a second item costs no taps.
 - **This is the cheapest part of the problem, not all of it.** Five fields to three is a real reduction and it removes the one he named, but it is still typing. Photographing the item and entering only a price, voice entry, or a favourites list of repeat products are the options that would actually change the interaction; each needs a decision from him first.
 
+### Referral rewards are tested
+- The program gives away the 20 USD booking fee and had no test in the suite: the only coverage was two HTTP smoke scripts needing a running server and Stripe, so nothing in `npm test` touched the code that decides when money is not collected.
+- `src/lib/store/referral.test.ts` pins redemption end to end -- a reward confirms the booking at zero and is spent, the same reward cannot be spent twice, an expired one is left alone and the customer pays, a self-referral and an unknown code are both refused, and the referrer is recorded on a first booking.
+- One of them exists because the failure would be silent and expensive: a complimentary booking is confirmed outright but keeps the hold it was created with, so it is pinned against the expiry sweep. Were it ever swept, the customer would lose the slot *and* the reward would stay spent.
+- Found while writing them: `cleanup` in the shared fixtures deleted `referidos_recompensas` before detaching `reservas.recompensa_referido_id`, so the foreign key aborted the whole teardown. It only triggers once a reward has actually been redeemed, which no test had ever done -- which is why nobody had hit it.
+
 ### Interface review
 A screen-by-screen pass over every page at desktop and 375 px, covering all five
 seller tabs, all three Colombia views and the customer screens.
