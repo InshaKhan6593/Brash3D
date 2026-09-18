@@ -71,13 +71,21 @@ const COLOMBIA: CountryConfig = {
   ],
   exampleCity: "Bogotá",
   examplePhone: "+57 300 123 4567",
-  localInvoice: {
-    entity: "Brash3D SAS (Colombia)",
-    reason: {
-      es: "Marca esta casilla solo si necesitas deducir la compra en Colombia. El equipo la emite manualmente.",
-      en: "Tick this only if you need to deduct the purchase in Colombia. The team issues it manually.",
-    },
-  },
+  // Withdrawn at the client's instruction (14 September 2026). Specification
+  // section 14 asked for this checkbox, framing it as a service to a business
+  // buyer who needs to deduct the purchase locally. What the specification never
+  // says is what it costs the business: a Brash3D SAS invoice is a formal sale
+  // inside Colombia, which carries IVA at 19%, and the client's position is that
+  // customers will simply refuse to pay it. Offering the option invites the one
+  // outcome the rest of the design works to avoid -- money landing in the
+  // Colombian entity rather than the US LLC (see specification sections 10, 14).
+  //
+  // `null` is what the field was built to take, so nothing else changes: the
+  // booking page drops the checkbox, and the seller and Colombia badges have
+  // nothing left to show. The `requiere_factura_local` column and its index stay
+  // in place, holding false for every new booking. Restoring the offer -- for a
+  // second country, or if the client changes position -- is this literal again.
+  localInvoice: null,
 }
 
 export const COUNTRIES: readonly CountryConfig[] = [COLOMBIA]

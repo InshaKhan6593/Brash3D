@@ -1,6 +1,6 @@
 "use client"
 
-import { FormEvent, use, useEffect, useMemo, useState } from "react"
+import { FormEvent, use, useEffect, useMemo, useState, useSyncExternalStore } from "react"
 import Link from "next/link"
 import {
   ArrowRight,
@@ -29,7 +29,7 @@ import { PurchaseHistoryTable } from "@/components/purchase-history-table"
 import { SESSION_LOAD_FAILED, useSession } from "@/lib/hooks/useSession"
 import { copyText } from "@/lib/clipboard"
 import { countryFor } from "@/lib/countries"
-import { CUSTOMER_ACCESS_PARAM, customerSessionPath } from "@/lib/customer-link"
+import { CUSTOMER_ACCESS_PARAM, customerSessionPath, customerSessionUrl } from "@/lib/customer-link"
 import { intlLocale, type Locale } from "@/lib/i18n/locale"
 import { useLocale } from "@/lib/i18n/provider"
 import type { Messages } from "@/lib/i18n/messages"
@@ -47,6 +47,21 @@ function shipmentStatusLabel(estado: EnvioEstado, country: string, t: Messages):
     default: return copy[estado]
   }
 }
+
+/**
+ * The page's own origin, without tripping over server rendering.
+ *
+ * `window` does not exist on the server, and reading it during render would
+ * make the two passes disagree. `useSyncExternalStore` is the sanctioned way to
+ * read a value that only the browser has: the server snapshot is empty, the
+ * client snapshot is the real origin, and React reconciles the two itself.
+ *
+ * The subscribe function never fires because an origin cannot change without a
+ * navigation, which remounts everything anyway.
+ */
+const subscribeToNothing = () => () => {}
+const readOrigin = () => window.location.origin
+const noOriginOnServer = () => ""
 
 interface TimelineItem {
   id: string
@@ -109,6 +124,109 @@ function ReferralInviteCard({ history, t }: { history: CustomerPurchaseHistory |
 }
 
 
+/**
+ * The customer choosing to receive their cart on WhatsApp, during the session.
+ *
+ * Offered only once the seller has started, because that is when it means
+ * something: the seller is on the call and can say "tap the green button on
+ * your screen". Before the session there is nothing to update, and an inviting
+ * control three days early is a question the customer cannot answer.
+ *
+ * Once used it settles into a confirmation rather than staying an inviting
+ * control -- the decision is made, and a live-looking button beside a cart that
+ * is already arriving only asks whether something went wrong. Turning it off
+ * stays possible, deliberately understated: consent has to be reversible, but
+ * it should not compete with the thing the customer came here to watch.
+ *
+ * Optimistic, and reverted on failure. This button is the only feedback there
+ * is, so it must never show "on" for a preference the server refused -- the
+ * customer would sit through the call waiting for messages that were never
+ * coming.
+ */
+function WhatsAppUpdatesButton({ sessionId, accessToken, enabled, chatHref, t }: {
+  sessionId: string
+  accessToken: string | null
+  enabled: boolean
+  /** Opens the customer's WhatsApp with a message to us already written. */
+  chatHref: string | null
+  t: Messages
+}) {
+  const [on, setOn] = useState(enabled)
+  const [error, setError] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  async function change(next: boolean) {
+    setOn(next)
+    setError(false)
+    setSaving(true)
+    try {
+      const response = await fetch("/api/whatsapp/updates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, accessToken, enabled: next }),
+      })
+      if (!response.ok) throw new Error("save failed")
+    } catch {
+      setOn(!next)
+      setError(true)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <Card>
+    <CardContent className="flex flex-col justify-between gap-4 py-5 sm:flex-row sm:items-center">
+      <div className="flex items-center gap-3">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted">
+          <WhatsAppIcon className="size-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="font-semibold">{on ? t.session.whatsappUpdatesDone : t.session.whatsappUpdatesTitle}</p>
+          <p className="text-sm text-muted-foreground">
+            {on ? t.session.whatsappUpdatesOn : t.session.whatsappUpdatesBody}
+          </p>
+          {error && <p className="mt-1 text-sm text-destructive">{t.session.whatsappUpdatesError}</p>}
+        </div>
+      </div>
+      {on ? (
+        <div className="flex shrink-0 items-center gap-2">
+          {/*
+            Disabled rather than removed: the customer needs to see that the
+            thing they pressed took effect, and an element that vanishes on
+            success reads as a failure.
+          */}
+          <Button type="button" size="lg" variant="secondary" disabled className="w-full sm:w-auto">
+            <Check />{t.session.whatsappUpdatesDone}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={saving} onClick={() => void change(false)}>
+            {t.session.whatsappUpdatesOff}
+          </Button>
+        </div>
+      ) : chatHref ? (
+        /*
+          One tap doing both jobs. Recording consent is only half of it: Meta
+          refuses free text to anyone who has not messaged the business in the
+          last 24 hours, and a booking is made days ahead, so the window is shut
+          by the time the session starts. Opening the chat is what reopens it.
+
+          An anchor rather than a button with a redirect, so the browser treats
+          it as the user navigating -- a programmatic `window.open` here is what
+          a popup blocker exists to stop.
+        */
+        <Button asChild size="lg" className="w-full shrink-0 sm:w-auto">
+          <a href={chatHref} target="_blank" rel="noopener noreferrer" onClick={() => void change(true)}>
+            <WhatsAppIcon className="size-4" />{t.session.whatsappUpdatesCta}
+          </a>
+        </Button>
+      ) : (
+        <Button type="button" size="lg" disabled={saving} className="w-full shrink-0 sm:w-auto" onClick={() => void change(true)}>
+          <WhatsAppIcon className="size-4" />{t.session.whatsappUpdatesCta}
+        </Button>
+      )}
+    </CardContent>
+  </Card>
+}
+
 export default function CustomerSessionPage({ params, searchParams }: PageProps<"/session/[id]">) {
   const { id } = use(params)
   // The customer's access token, when they arrived on a durable link. Client
@@ -118,18 +236,50 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
   const { locale, t } = useLocale()
   // recoverToken: this is the one screen with a customer cookie to fall back
   // on, and the one that needs the token in the address bar.
-  const { session, loading, error, pay, recoveredToken } = useSession(id, urlToken, { recoverToken: true, realtime: true })
+  const { session, loading, error, pay, recoveredToken, whatsappNumber } = useSession(id, urlToken, { recoverToken: true, realtime: true })
   const [now, setNow] = useState(() => Date.now())
   const [paymentError, setPaymentError] = useState("")
   const [paymentStarting, setPaymentStarting] = useState(false)
   const [history, setHistory] = useState<CustomerPurchaseHistory | null>(null)
   const activeToken = urlToken || recoveredToken
   const dateLocale = intlLocale(locale, countryFor(session?.cliente.pais).locale)
+  const origin = useSyncExternalStore(subscribeToNothing, readOrigin, noOriginOnServer)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [])
+
+  /**
+   * The chat link, carrying the customer's own order link inside the message.
+   *
+   * The message is sent *by the customer*, so once they tap send, their order
+   * link is sitting in their own WhatsApp thread -- tappable, searchable, and
+   * still there in three days when the session comes round. That is the actual
+   * problem being solved: a booking is made days ahead, nobody keeps a browser
+   * tab that long, and until now the link lived only in a tab they were about
+   * to close.
+   *
+   * It does two jobs at once, which is why it is worth the awkwardness of
+   * prefilling a URL into someone's outgoing message: the same tap opens the
+   * 24-hour window that lets the seller echo products during the call.
+   *
+   * Empty until `origin` is known, so the link is never sent half-built.
+   */
+  const chatHref = useMemo(() => {
+    // `activeToken` is required, not optional. Without it the link is
+    // `/session/<id>` with no credential in it, which works in this browser
+    // because of the cookie and nowhere else -- so the customer would send
+    // themselves a link that is dead on the phone they read it on. That is the
+    // precise failure recorded in SPEC_DECISIONS entry 13, and sending it to
+    // them over WhatsApp would make it permanent rather than momentary.
+    //
+    // The token arrives a beat later for a cookie-only visitor, so the button
+    // is absent for that moment rather than wrong.
+    if (!whatsappNumber || !origin || !activeToken) return null
+    const orderUrl = customerSessionUrl(origin, id, activeToken)
+    return `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(`${t.session.whatsappPrefill}\n${orderUrl}`)}`
+  }, [activeToken, id, origin, t.session.whatsappPrefill, whatsappNumber])
 
   /**
    * Puts the access token into the address bar when the page was opened without
@@ -293,7 +443,6 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
                 <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.session.appointment}</p><p className="mt-1 font-semibold">{scheduledAt.toLocaleString(dateLocale, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })}</p></div>
                 <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.session.outlet}</p><p className="mt-1 font-semibold">{session.outlet || "Nike Sawgrass"}</p><p className="text-sm text-muted-foreground">{t.session.withSeller(session.vendedor.nombre)}</p></div>
                 <div className="rounded-md bg-muted p-4 sm:col-span-2"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">{t.session.bookingPayment}</p><p className="text-sm text-muted-foreground">{t.session.bookingSecured}</p></div><Badge variant="secondary"><CheckCircle2 />{session.bookingFee > 0 ? t.session.feePaid : t.session.referralReward}</Badge></div></div>
-                <Button size="lg" className="sm:col-span-2" disabled><WhatsAppIcon />{scheduledTimePassed ? t.session.waitingToStart : t.session.connectWhenStarted}</Button>
                 <p className="text-center text-xs text-muted-foreground sm:col-span-2">{t.session.keepOpen}</p>
               </CardContent>
             </Card>
@@ -330,9 +479,12 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
                     <span className="flex size-10 items-center justify-center rounded-full bg-muted"><WhatsAppIcon className="size-5" /></span>
                     <div><p className="font-semibold">{t.session.callInProgress}</p><p className="text-sm text-muted-foreground">{t.session.callInProgressBody}</p></div>
                   </div>
-
                 </CardContent>
               </Card>
+            )}
+
+            {isLive && whatsappNumber && (
+              <WhatsAppUpdatesButton sessionId={id} accessToken={activeToken} enabled={session.whatsappUpdates} chatHref={chatHref} t={t} />
             )}
 
             <Card>

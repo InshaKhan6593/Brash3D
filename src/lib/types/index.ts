@@ -92,6 +92,8 @@ export interface SesionCompra {
   deliveryAddress?: string
   deliveryCity?: string
   deliveryAddressConfirmedAt?: Date
+  /** The customer asked for their cart on WhatsApp, from their order page. */
+  whatsappUpdates: boolean
   envio?: Envio
 }
 

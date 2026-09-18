@@ -33,6 +33,7 @@ interface SessionRow extends QueryResultRow {
   booking_estado: Reserva["estado"]
   booking_fee: string
   requiere_factura_local: boolean
+  whatsapp_updates: boolean
   fecha_programada: string | null
   hora_programada: string | null
   estado: SesionCompra["estado"]
@@ -106,6 +107,7 @@ const SESSION_SELECT = `
     sc.monto_pagado_inicial::text, sc.monto_pagado_final::text,
     sc.direccion_entrega AS direccion_entrega_sesion,
     sc.ciudad_entrega AS ciudad_entrega_sesion, sc.direccion_confirmada_at,
+    sc.whatsapp_updates,
     e.id::text AS envio_id, e.caja_id::text, e.estado AS envio_estado, e.etiqueta_codigo,
     e.direccion_entrega, e.ciudad_entrega, e.tracking_number,
     e.transportadora, e.metodo_pago_recibido, e.fecha_envio, e.fecha_entrega_estimada,
@@ -186,6 +188,7 @@ function mapSession(row: SessionRow, products: Producto[]): SesionCompra {
     deliveryAddress: row.direccion_entrega_sesion || undefined,
     deliveryCity: row.ciudad_entrega_sesion || undefined,
     deliveryAddressConfirmedAt: row.direccion_confirmada_at ? new Date(row.direccion_confirmada_at) : undefined,
+    whatsappUpdates: row.whatsapp_updates,
     envio: row.envio_id && row.envio_estado ? {
       id: row.envio_id,
       sesionId: row.id,
@@ -811,6 +814,7 @@ export async function getBooking(id: string): Promise<Reserva | null> {
     estado: Reserva["estado"]
     monto_reserva: string
     requiere_factura_local: boolean
+  whatsapp_updates: boolean
     created_at: Date
   }>(`
     SELECT r.id::text, r.cliente_id::text, c.nombre, c.email, c.telefono, c.ciudad, c.pais,
@@ -1034,6 +1038,109 @@ export async function removeProductFromSession(
       WHERE pc.id::text = $2 AND pc.sesion_id::text = $1
         AND sc.id = pc.sesion_id AND sc.estado = 'en_progreso' AND sc.started_at IS NOT NULL
     `, [sessionId, productId])
+    if (!result.rowCount) return null
+    await recalculateTotals(client, sessionId)
+    return getSessionWithClient(clientQuery(client), sessionId)
+  })
+}
+
+export interface BookingConfirmationContext {
+  sessionId: string
+  nombre: string
+  telefono: string
+  fechaHora: Date
+  outlet: string
+}
+
+/**
+ * What a booking confirmation message needs, found from its Stripe checkout.
+ *
+ * Read after the webhook's transaction has committed rather than inside it: a
+ * message is not worth holding a row lock for, and a Meta outage must never
+ * roll back a booking Stripe has already taken money for.
+ */
+export async function bookingConfirmationContext(
+  checkoutSessionId: string
+): Promise<BookingConfirmationContext | null> {
+  const result = await query<{
+    sesion_id: string
+    nombre: string
+    telefono: string
+    fecha_hora: Date
+    outlet: string | null
+  }>(`
+    SELECT sc.id::text AS sesion_id, c.nombre, c.telefono, r.fecha_hora, v.tienda_asignada AS outlet
+    FROM reservas r
+    JOIN sesiones_compra sc ON sc.reserva_id = r.id
+    JOIN clientes c ON c.id = r.cliente_id
+    JOIN vendedores v ON v.id = sc.vendedor_id
+    WHERE r.checkout_session_id = $1
+  `, [checkoutSessionId])
+
+  const row = result.rows[0]
+  if (!row) return null
+  return {
+    sessionId: row.sesion_id,
+    nombre: row.nombre,
+    telefono: row.telefono,
+    fechaHora: new Date(row.fecha_hora),
+    outlet: row.outlet || "Nike Sawgrass",
+  }
+}
+
+/**
+ * Records whether this customer wants their cart pushed to WhatsApp.
+ *
+ * The customer's own choice, made from their order page, and the only thing the
+ * seller's echo consults before sending. Meta's window governs *how* a message
+ * may be sent; nothing in the platform records whether it was wanted, and an
+ * unasked-for message is how a business number earns a low quality rating.
+ *
+ * Allowed at any point in the order's life: a customer may want the running
+ * commentary during the call and turn it off the moment it is over.
+ */
+export async function setWhatsAppUpdates(
+  sessionId: string,
+  enabled: boolean
+): Promise<SesionCompra | null> {
+  const result = await query(`
+    UPDATE sesiones_compra
+    SET whatsapp_updates = $2,
+        whatsapp_updates_at = CASE WHEN $2 THEN now() ELSE whatsapp_updates_at END
+    WHERE id::text = $1
+  `, [sessionId, enabled])
+  if (!result.rowCount) return null
+  return getSession(sessionId)
+}
+
+/**
+ * Sets the commission this order is priced at, and reprices the cart.
+ *
+ * The rate is captured on the session at creation from `FEE_RATE` (migration
+ * 013) so a later change of the environment variable cannot reprice an invoice
+ * already quoted. That protection is worth keeping; what it lacked was any way
+ * to set the rate for a single order, and the client charges 10, 15, 20 or 30
+ * percent depending on the deal he struck with that customer.
+ *
+ * Only while the session is `en_progreso`, which is deliberately looser than
+ * the cart edits: the rate is a term agreed before the call, so the seller sets
+ * it before pressing Start as often as during. Closing locks it with the rest
+ * of the invoice, and a repricing after that would move a total the customer
+ * has already been shown.
+ *
+ * `recalculateTotals` runs in the same transaction because the commission is
+ * part of the total the customer is watching, not a label beside it.
+ */
+export async function setCommissionRate(
+  sessionId: string,
+  commissionPercentage: number
+): Promise<SesionCompra | null> {
+  return transaction(async (client) => {
+    const result = await client.query(`
+      UPDATE sesiones_compra
+      SET tasa_comision = $2
+      WHERE id::text = $1 AND estado = 'en_progreso'
+    `, [sessionId, commissionPercentage / 100])
     if (!result.rowCount) return null
     await recalculateTotals(client, sessionId)
     return getSessionWithClient(clientQuery(client), sessionId)

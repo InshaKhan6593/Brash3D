@@ -13,6 +13,12 @@ import { EnvioEstado, Producto, SesionCompra } from "@/lib/types"
  */
 export const SESSION_LOAD_FAILED = "SESSION_LOAD_FAILED"
 
+interface SessionResponse {
+  session: SesionCompra
+  whatsappNumber?: string | null
+  whatsappWindow?: WhatsAppWindowState | null
+}
+
 interface UseSessionReturn {
   session: SesionCompra | null
   loading: boolean
@@ -21,6 +27,8 @@ interface UseSessionReturn {
   updateQuantity: (productId: string, delta: number) => Promise<void>
   removeProduct: (productId: string) => Promise<void>
   close: (initialPercentage: number) => Promise<void>
+  /** The commission this order is priced at, settable until the invoice closes. */
+  setCommission: (commissionPercentage: number) => Promise<void>
   reopenForCorrection: () => Promise<void>
   start: () => Promise<void>
   updateDeliveryStatus: (status: EnvioEstado) => Promise<void>
@@ -36,6 +44,21 @@ interface UseSessionReturn {
    * looking at is portable like every other customer link.
    */
   recoveredToken: string | null
+  /**
+   * The business WhatsApp number, when the integration is configured.
+   *
+   * The bare number rather than a finished link: the prefilled text has to be
+   * in the reader's language, and only the client knows which that is.
+   */
+  whatsappNumber: string | null
+  /** Staff only: whether free text may reach this customer right now. */
+  whatsappWindow: WhatsAppWindowState | null
+}
+
+export interface WhatsAppWindowState {
+  open: boolean
+  lastInboundAt: string | null
+  expiresAt: string | null
 }
 
 /**
@@ -53,6 +76,8 @@ export function useSession(
   const [loading, setLoading] = useState(Boolean(sessionId))
   const [error, setError] = useState<string | null>(null)
   const [recoveredToken, setRecoveredToken] = useState<string | null>(null)
+  const [whatsappNumber, setWhatsappNumber] = useState<string | null>(null)
+  const [whatsappWindow, setWhatsappWindow] = useState<WhatsAppWindowState | null>(null)
   // Whichever token the request should carry: the one from the URL, or the one
   // the cookie-backed recovery handed back.
   const activeToken = accessToken || recoveredToken
@@ -92,8 +117,10 @@ export function useSession(
               cache: "no-store",
             })
             if (retried.ok) {
-              const data = (await retried.json()) as { session: SesionCompra }
+              const data = (await retried.json()) as SessionResponse
               setSession(data.session)
+              setWhatsappNumber(data.whatsappNumber ?? null)
+              setWhatsappWindow(data.whatsappWindow ?? null)
               setError(null)
               return
             }
@@ -107,8 +134,10 @@ export function useSession(
       }
       if (!response.ok) throw new Error(SESSION_LOAD_FAILED)
 
-      const data = (await response.json()) as { session: SesionCompra }
+      const data = (await response.json()) as SessionResponse
       setSession(data.session)
+      setWhatsappNumber(data.whatsappNumber ?? null)
+      setWhatsappWindow(data.whatsappWindow ?? null)
       setError(null)
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : SESSION_LOAD_FAILED)
@@ -171,6 +200,10 @@ export function useSession(
     await mutate("close", { initialPercentage })
   }, [mutate])
 
+  const setCommission = useCallback(async (commissionPercentage: number) => {
+    await mutate("setCommissionRate", { commissionPercentage })
+  }, [mutate])
+
   const reopenForCorrection = useCallback(async () => {
     await mutate("reopenForCorrection", {})
   }, [mutate])
@@ -214,5 +247,5 @@ export function useSession(
     }
   }, [activeToken, sessionId])
 
-  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, reopenForCorrection, start, updateDeliveryStatus, pay, refresh, recoveredToken }
+  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, setCommission, reopenForCorrection, start, updateDeliveryStatus, pay, refresh, recoveredToken, whatsappNumber, whatsappWindow }
 }

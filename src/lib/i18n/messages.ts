@@ -92,6 +92,30 @@ export const MESSAGES = {
       waitingToStart: "Esperando a que tu comprador inicie",
       connectWhenStarted: "Te conectas cuando tu comprador inicie la sesión",
       keepOpen: "Deja esta página abierta. Cambiará a tu carrito en vivo automáticamente.",
+      // WhatsApp only lets a business reply to someone who messaged it in the
+      // last 24 hours, so this tap is what makes the product echo possible.
+      // The text is written as the customer's own words because they are the
+      // ones sending it -- and short enough that nobody edits it first.
+      whatsappTitle: "Recibe tu carrito por WhatsApp",
+      whatsappBody: "Toca el botón para abrir el chat con tu comprador. Cada producto que agregue te llegará ahí mismo, sin salir de la videollamada.",
+      whatsappCta: "Abrir chat de WhatsApp",
+      whatsappPrefill: "Hola Brash3D, estoy listo para mi sesión de compra.",
+      // Shown before the session starts, which is the one moment we know the
+      // customer is looking at this page -- they have just paid. After today
+      // they will not keep this tab, so this tap is what moves the order into
+      // a WhatsApp thread they already check.
+      whatsappBookingTitle: "Guarda tu pedido en WhatsApp",
+      whatsappBookingBody: "Ábrelo una vez y tu pedido queda en tu chat. No necesitas guardar esta página.",
+      // The consent switch. Phrased as what the customer gets, not as what the
+      // business is permitted to do -- they are choosing to receive their cart,
+      // not granting a marketing permission.
+      whatsappUpdatesTitle: "Recibir mi carrito por WhatsApp",
+      whatsappUpdatesBody: "Te enviamos cada producto con su precio mientras compramos, en tu chat.",
+      whatsappUpdatesOn: "Activado. Cada producto te llegará a tu WhatsApp.",
+      whatsappUpdatesCta: "Recibir actualizaciones",
+      whatsappUpdatesDone: "Actualizaciones activadas",
+      whatsappUpdatesOff: "Desactivar",
+      whatsappUpdatesError: "No pudimos guardar tu preferencia. Inténtalo de nuevo.",
       yourOrder: "Tu pedido",
       liveCart: "Tu carrito en vivo",
       brashOrder: "Tu pedido Brash3D",
@@ -363,6 +387,19 @@ export const MESSAGES = {
       waitingToStart: "Waiting for your shopper to start",
       connectWhenStarted: "You connect when your shopper starts the session",
       keepOpen: "Leave this page open. It switches to your live cart automatically.",
+      whatsappTitle: "Get your cart on WhatsApp",
+      whatsappBody: "Tap to open the chat with your personal shopper. Every product they add arrives there, without leaving the video call.",
+      whatsappCta: "Open WhatsApp chat",
+      whatsappPrefill: "Hi Brash3D, I am ready for my shopping session.",
+      whatsappBookingTitle: "Keep your order in WhatsApp",
+      whatsappBookingBody: "Open it once and your order stays in your chat. You do not need to keep this page.",
+      whatsappUpdatesTitle: "Get my cart on WhatsApp",
+      whatsappUpdatesBody: "We send each product and its price to your chat while we shop.",
+      whatsappUpdatesOn: "On. Every product will arrive in your WhatsApp.",
+      whatsappUpdatesCta: "Get updates",
+      whatsappUpdatesDone: "Updates on",
+      whatsappUpdatesOff: "Turn off",
+      whatsappUpdatesError: "We could not save your preference. Please try again.",
       yourOrder: "Your order",
       liveCart: "Your live cart",
       brashOrder: "Your Brash3D order",

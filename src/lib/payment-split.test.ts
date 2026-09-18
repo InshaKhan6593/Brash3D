@@ -4,7 +4,9 @@ import {
   finalAmount,
   initialAmount,
   isPaidInFullUpFront,
+  isValidCommissionPercentage,
   isValidPercentage,
+  MINIMUM_INITIAL_PERCENTAGE,
   outstandingBalance,
 } from "@/lib/payment-split"
 
@@ -60,5 +62,32 @@ describe("payment split", () => {
     expect(isValidPercentage(101)).toBe(false)
     expect(isValidPercentage("65")).toBe(false)
     expect(isValidPercentage(Number.NaN)).toBe(false)
+  })
+
+  // "but for sure they have to pay 50%.....in advanced" — the client, 14 Sep 2026.
+  it("refuses an up-front share below half", () => {
+    expect(isValidPercentage(MINIMUM_INITIAL_PERCENTAGE)).toBe(true)
+    expect(isValidPercentage(49.9)).toBe(false)
+    expect(isValidPercentage(35)).toBe(false)
+    expect(isValidPercentage(1)).toBe(false)
+  })
+
+  // An order closed under the old rule still settles at the figure it quoted:
+  // the floor governs what a seller may choose, not what the system can price.
+  it("still prices a percentage recorded before the floor existed", () => {
+    expect(initialAmount(200, 35)).toBeCloseTo(70, 2)
+    expect(finalAmount(200, 35)).toBeCloseTo(130, 2)
+    expect(clampPercentage(35)).toBe(35)
+  })
+
+  it("accepts every commission rate the client described", () => {
+    for (const rate of [10, 15, 20, 30]) expect(isValidCommissionPercentage(rate)).toBe(true)
+    expect(isValidCommissionPercentage(0)).toBe(true)
+    // The database stores the rate as a fraction under `>= 0 AND < 1`, so 100
+    // has no representation and a negative rate would pay the customer.
+    expect(isValidCommissionPercentage(100)).toBe(false)
+    expect(isValidCommissionPercentage(-1)).toBe(false)
+    expect(isValidCommissionPercentage("15")).toBe(false)
+    expect(isValidCommissionPercentage(Number.NaN)).toBe(false)
   })
 })

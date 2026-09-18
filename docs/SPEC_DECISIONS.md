@@ -391,3 +391,98 @@ does not know the reader's language, so `POST /api/payments/checkout` now sends
 a stable `code` next to its Spanish sentence. The sentences are unchanged: one
 is pinned by `scripts/session-contract-smoke-test.mjs`, and they remain the
 fallback for a code a client does not recognise.
+
+---
+
+## 15. The local Brash3D SAS invoice costs more than the specification says
+
+**Specification, §14.**
+
+> Brash3D SAS is also used to issue a local Colombian invoice when a customer
+> specifically needs one (for example, a business buyer who needs to deduct the
+> purchase locally) ... Flag it with a simple boolean on `reservas` (e.g.
+> `requiere_factura_local`)
+
+Built as written: a checkbox on the booking screen, and a badge for the seller
+and the Colombia team.
+
+**What the specification never mentions is the tax.** The client supplied it on
+14 September 2026, looking at that checkbox:
+
+> The idea is to avoid this because if we receive money in colombia we need to
+> pay taxes. almost 19% .. and people will no pay.
+
+A Brash3D SAS invoice is a formal sale inside Colombia, carrying IVA. The
+specification frames the flag purely as a service to the customer and never
+weighs it against §10 and §14, which spend several paragraphs keeping money out
+of the Colombian entity — "minimize formal deposits", transfer as a last resort,
+SAS as "a local, trustworthy presence, not ... a primary payment channel". The
+checkbox invited exactly the outcome those paragraphs avoid, and it invited it
+from the customer, who has no reason to weigh the business's tax position.
+
+**Resolved:** `DEFAULT_COUNTRY.localInvoice` is `null`. The field was built to
+take it, so nothing else changed: the booking screen drops the checkbox and the
+two badges have nothing left to show. The column and its index stay, holding
+false for every new booking, and bookings made before the change keep their flag.
+
+**Note for the client.** With the checkbox gone, nothing can raise the flag — it
+was the only input. If a business buyer insists mid-call, the team has no way to
+record it in the app. Giving the seller a staff-side toggle would restore the
+escape hatch without ever showing customers the option; the client should say
+whether he wants that, or whether the occasional case is handled outside the
+system entirely.
+
+---
+
+## 16. One commission rate cannot express how the business charges
+
+**Specification, §3 and §6.** `FEE_RATE=0.15` is a backend environment variable,
+and §6 computes `comision = subtotal * FEE_RATE`. One rate, every customer,
+forever. Migration 013 already improved on this by capturing the rate on each
+session, so a later change of the variable could not reprice an invoice already
+quoted — but nothing could set the rate for a single order.
+
+**The client charges by the deal** (14 September 2026):
+
+> maybe we can say that they hace to pay certain amount of money that they are
+> willing to invest and we charge only 10% or maybe we can say they have to pay
+> when we are in the store buying and to buythey have to pay 50% of the amount
+> og the invoice plus taxes plus 15% commission... or maybe we can say we pay
+> everything but you have to pay 20 o 30% commission.. but for sure they have to
+> pay 50%.....in advanced
+
+**Resolved:** the seller sets the commission per order from the live panel, with
+10/15/20/30 presets and a free field. The bound is the database's own
+(`sesiones_rate_range_check`, a fraction `>= 0 AND < 1`), because the client
+named four rates and never described a ceiling — inventing a narrower one would
+be ours, not his.
+
+**Set during the session, not at close.** The up-front split is chosen when
+closing, which is right: the total is known by then. Commission is not the same
+kind of decision — it is a term agreed before the call, and the customer watches
+their cart price itself live. A rate that first appeared at close would show
+them 15% for the whole session and then move the total at the end, which reads
+as a bait and switch even when both sides agreed 25% that morning. So the rate
+is settable from the moment the session exists, including before Start, and
+locked by closing along with the rest of the invoice.
+
+**The 50 percent floor.** "but for sure they have to pay 50%" is stated as a
+rule and applies across all three models, so it is enforced rather than
+suggested: `isValidPercentage` now refuses anything below it, and the close
+dialog's presets and input agree. It constrains what a seller may choose, not
+what the system can price — `clampPercentage` is untouched, so an order closed
+under the old range still settles at exactly the figure it quoted. Both
+directions are pinned by tests.
+
+**Still open with the client.** The first model — a customer naming an amount
+they are willing to invest, with 10% charged on it — is not a settings change.
+Nothing in the specification or the designs contemplates a budget: every dollar
+figure in the system is derived from products the seller has already added, and
+the only charge that exists before a product does is the flat 20 USD booking fee.
+A budget changes the commission base, what the up-front 50% is a share of, and
+what the live cart is counting (down from a budget, rather than up to a total).
+It may also be how the client wants to solve the live-entry problem he raised in
+the same conversation. Three questions decide the shape, and none of them can be
+guessed: is the 10% on the budget or on what is actually spent; is the budget
+paid before the store visit or still 50% up front; and does an underspend refund
+or become credit.

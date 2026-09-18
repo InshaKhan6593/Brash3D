@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger"
 import type Stripe from "stripe"
 import { clearSessionCheckout, processBookingCheckoutEvent, processSessionCheckoutEvent } from "@/lib/store/sessionStore"
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe"
+import { sendBookingConfirmation } from "@/lib/whatsapp/booking-confirmation"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -92,6 +93,14 @@ async function POSTHandler(request: Request) {
       { idempotencyKey: `expired-booking-${checkout.id}` }
     )
     outcome = await processBookingCheckoutEvent({ ...input, latePaymentRefunded: true })
+  }
+
+  // The message that gives the customer a way back to their order. Sent after
+  // the transaction has committed, and never allowed to fail the webhook: the
+  // booking is confirmed and paid either way, and a 500 here would have Stripe
+  // retry an event already applied.
+  if (outcome === "confirmed") {
+    await sendBookingConfirmation(checkout.id, new URL(request.url).origin)
   }
 
   logger.info("Stripe booking checkout processed", { eventId: event.id, type: event.type, outcome })

@@ -2,7 +2,11 @@ import { NextResponse } from "next/server"
 import type { EnvioEstado } from "@/lib/types"
 import { invalidBody, readJsonBody, withErrorHandling } from "@/lib/api"
 import { requestHasSameOrigin, requireStaff, verifyCustomerAccess } from "@/lib/auth"
-import { isValidPercentage } from "@/lib/payment-split"
+import {
+  isValidCommissionPercentage,
+  isValidPercentage,
+  MINIMUM_INITIAL_PERCENTAGE,
+} from "@/lib/payment-split"
 import {
   getSession,
   listSessions,
@@ -12,12 +16,30 @@ import {
   closeSession,
   reopenSessionForCorrection,
   rotateCustomerAccess,
+  setCommissionRate,
   startSession,
   updateDeliveryStatus,
 } from "@/lib/store/sessionStore"
+import { windowState } from "@/lib/store/whatsappStore"
+import { businessNumber } from "@/lib/whatsapp/config"
+import { sendProductUpdate, type SendOutcome } from "@/lib/whatsapp/send"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
+
+/**
+ * What the seller is told about the echo, as a short code the panel translates.
+ *
+ * `window_closed` is the only one with a remedy they can apply mid-call: the
+ * customer has not messaged the business, so they should be asked to tap the
+ * WhatsApp button on their order page. The rest are informational — the product
+ * is on the invoice regardless, which is what section 7.1 requires.
+ */
+function echoStatus(outcome: SendOutcome): "sent" | "window_closed" | "failed" | "disabled" {
+  if (outcome.status === "sent") return "sent"
+  if (outcome.status === "disabled") return "disabled"
+  return outcome.windowClosed ? "window_closed" : "failed"
+}
 
 async function POSTHandler(request: Request) {
   if (!requestHasSameOrigin(request)) {
@@ -84,7 +106,22 @@ async function POSTHandler(request: Request) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 })
     }
 
-    return NextResponse.json({ session })
+    // Specification 7.1: echo the item into the customer's WhatsApp chat so it
+    // appears beside the video call without them switching screens. Awaited but
+    // never allowed to fail the request -- the send returns an outcome rather
+    // than throwing, precisely because the cart insert above has already
+    // committed and the item belongs on the invoice either way.
+    //
+    // Only for a customer who asked for it. Consent is theirs to give from
+    // their own order page; an unasked-for message costs the business number
+    // its quality rating, and costs the customer a notification they did not
+    // want in the middle of their evening.
+    const added = session.productos[session.productos.length - 1]
+    const echo = added && session.whatsappUpdates
+      ? await sendProductUpdate(session.cliente.telefono, added.nombre, added.precio, added.cantidad)
+      : { status: "disabled" as const }
+
+    return NextResponse.json({ session, whatsapp: echoStatus(echo) })
   }
 
   if (action === "start") {
@@ -127,11 +164,33 @@ async function POSTHandler(request: Request) {
     return NextResponse.json({ session })
   }
 
+  if (action === "setCommissionRate") {
+    const commissionPercentage = Number(data.commissionPercentage)
+    if (!isValidCommissionPercentage(commissionPercentage)) {
+      return NextResponse.json(
+        { error: "The commission must be at least 0% and below 100%" },
+        { status: 400 }
+      )
+    }
+    const session = await setCommissionRate(sessionId, commissionPercentage)
+    // Existence and ownership were settled above, so the only refusal left is
+    // the state: a closed session prices no further. The cart guard is not
+    // reused here on purpose — the rate is agreed before the call, so it has to
+    // be settable on a session that has not been started yet.
+    if (!session) {
+      return NextResponse.json(
+        { error: "The invoice is closed and its commission can no longer be changed" },
+        { status: 409 }
+      )
+    }
+    return NextResponse.json({ session })
+  }
+
   if (action === "close") {
     const initialPercentage = Number(data.initialPercentage)
     if (!isValidPercentage(initialPercentage)) {
       return NextResponse.json(
-        { error: "The up-front percentage must be greater than 0 and at most 100" },
+        { error: `The up-front percentage must be at least ${MINIMUM_INITIAL_PERCENTAGE}% and at most 100%` },
         { status: 400 }
       )
     }
@@ -219,7 +278,23 @@ async function GETHandler(request: Request) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 })
   }
 
-  return NextResponse.json({ session })
+  // The business number, so the customer's page can offer a one-tap chat link.
+  // Sent as the bare number rather than a finished wa.me URL on purpose: the
+  // prefilled text has to be in the reader's language, and the server does not
+  // know it -- the locale lives in a cookie the client owns. Omitted entirely
+  // when WhatsApp is not configured, so the card simply does not render.
+  //
+  // Not a secret. It is the number the business publishes to be messaged on.
+  const whatsappNumber = businessNumber()
+
+  // Whether the seller may send free text to this customer right now. Only the
+  // staff view needs it: it is the difference between "adding a product will
+  // reach them" and "ask them to tap the WhatsApp button first".
+  const whatsappWindow = staffCanAccess && whatsappNumber
+    ? await windowState(session.cliente.telefono)
+    : undefined
+
+  return NextResponse.json({ session, whatsappNumber, whatsappWindow })
 }
 
 export const GET = withErrorHandling("GET sessions", GETHandler)

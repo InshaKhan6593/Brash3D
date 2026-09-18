@@ -17,11 +17,15 @@ designs and the 14-section technical specification).
 - Seller live product entry, cart editing, quantity changes, and session closure.
 - Customer live cart and order-progress timeline, refreshed by polling.
 - Tax and commission rates configurable through `TAX_RATE_FL` and `FEE_RATE`, recorded per session so a rate change never reprices an invoice already quoted.
+- **Commission set per order, not per business.** The specification fixed it at 15% for everyone (§3, `FEE_RATE`); the client charges by the deal — 10% against a customer's budget, 15% on an ordinary split, 20 to 30% when Brash3D fronts the whole purchase. The seller now sets the rate from the live panel with 10/15/20/30 presets or any figure the database can store.
+- The control sits in the session panel rather than the close dialog, where the up-front split lives. The customer watches their cart price itself live, so a rate that only appeared at close would show them 15% for the whole session and then move the total at the end — which reads as a bait and switch even when both sides agreed 25% that morning. Setting it before the first product is added is the intended order, and the card says so.
+- Closing locks it with the rest of the invoice: `setCommissionRate` matches only an `en_progreso` session, so a repricing cannot move a total the customer has already been shown. Pinned by `src/lib/store/commission.test.ts`, along with the four rates the client named, the reprice of an existing cart, and the database range beneath the API's validation.
 - Admin-only session reopening for correction, recorded in an audit table.
 
 ### Payments
 - All three Stripe stages: the 20 USD booking fee, the initial invoice, and the delivery-triggered balance.
-- Per-order payment split. The seller chooses how much is paid up front when closing the session (100, 85, 65 percent or any figure between 1 and 100); the balance is collected on delivery. A fully prepaid order skips collection and goes straight to delivery confirmation.
+- Per-order payment split. The seller chooses how much is paid up front when closing the session (100, 85, 65 or 50 percent, or any figure between 50 and 100); the balance is collected on delivery. A fully prepaid order skips collection and goes straight to delivery confirmation.
+- **Never below 50 percent up front.** The client stated it as a rule across every pricing model he described, not a preference: that money funds the purchase at the outlet, so a smaller share has Brash3D fronting stock against a promise. Enforced in the API and in the close dialog. It governs what a seller may choose, not what the system can price — an order closed before the rule settles at exactly the figure it was quoted, which is why `clampPercentage` was deliberately left alone and is pinned by a test in both directions.
 - The two charges are derived by subtraction, so they always add up to the invoice exactly rather than drifting a cent through independent rounding.
 - Signature-verified, idempotent webhook processing.
 - Late booking payments refunded automatically, recorded in `payment_logs` and surfaced as a staff notification.
@@ -41,7 +45,7 @@ designs and the 14-section technical specification).
 - USA consolidated-box dispatch and the Colombia local-team receipt manifest.
 - Stripe, cash, and transfer collection at delivery, with transfer visually de-emphasised as the specification requires.
 - Per-box settlement summary separating Stripe (US LLC revenue) from the cash and transfer amounts that stay in Colombia as the local operating fund.
-- Customer-requested local Brash3D SAS invoice flag, surfaced in the seller panel and the Colombia delivery manifest.
+- **The local-invoice offer is withdrawn** at the client's instruction. Specification section 14 asked for it and framed it as a service to a business buyer who needs to deduct the purchase locally; what it never says is the cost, which the client supplied: a Brash3D SAS invoice is a formal sale inside Colombia carrying IVA at 19%, and his customers will refuse to pay it. Offering it invited the one outcome the rest of the design works to avoid — money landing in the Colombian entity rather than the US LLC. `DEFAULT_COUNTRY.localInvoice` is `null`, which is what the field was built to take, so the checkbox is gone from the booking screen and the seller and Colombia badges have nothing left to show. The `requiere_factura_local` column and its index stay, holding false for every new booking; restoring the offer is that literal again. Bookings made before the change keep their flag and still show the badge.
 
 ### Customer order links
 - The customer's order link carries its own access token, so it works in any browser, on any device, and again weeks later. Built in one place (`src/lib/customer-link.ts`) and used by the seller's copied link, the token-for-cookie redirect, and both Stripe return URLs.
@@ -49,6 +53,19 @@ designs and the 14-section technical specification).
 - The cookie is now a convenience, not the credential. The three customer APIs each accept the token explicitly and fall back to the cookie, so neither path depends on the other, and a cookie-only visitor is handed its own token back and has it written into the address bar.
 - The "session not found" card names the real cause and tells the customer to reopen the secure link. It used to assert the link was invalid, expired or replaced — all three wrong for the common case, and misleading enough to look like a defect.
 - The delivery address freezes as soon as the up-front payment lands (`confirmDeliveryAddress`), which is what keeps a portable link safe: a forwarded link can read an order in flight but can never redirect the goods. That guard already existed as raw SQL in the checkout route; it moved behind the store boundary so it could be tested, and is now pinned in both directions.
+
+### WhatsApp
+- The booking confirmation is sent when the Stripe webhook confirms payment, carrying the customer's own order link. This is specification screen 3 -- "After payment, the customer receives the WhatsApp video call link" -- and the client's own reason for wanting WhatsApp at all: a booking is made days ahead, nobody keeps a browser tab that long, and the link previously existed only in a page the customer was about to close. A WhatsApp thread is where these buyers already are, and it is still there on the day.
+- Specification 7.1's product echo, sent as the seller adds each item. Free text inside an open messaging window, and an approved template when there is none, chosen per send -- so the customer receives their cart without having to tap anything first.
+- A send never costs a cart insert. `sendText` and `sendTemplate` return an outcome rather than throwing, which is section 7.1's explicit instruction: the item is on the invoice whether or not Meta was reachable.
+- The customer opts in, from their order page, during the session. Offered only once the seller has started, because that is when the seller can say "tap the green button on your screen"; before then there is nothing to update. One tap opens their WhatsApp *and* records consent -- the same act that reopens Meta's 24-hour window. Once used the control settles into a confirmation rather than staying an inviting button, with an understated way to turn it off.
+- Consent is checked before every echo. Meta's window governs how a message may be sent; nothing in the platform records whether it was wanted, and an unasked-for message is how a business number earns a low quality rating.
+- The seller panel shows whether the window is open, so a shut one is discovered before the first product rather than as a rejected send mid-call.
+- Inbound webhook with the `GET` verification handshake and `X-Hub-Signature-256` verification. With no app secret it refuses every POST rather than trusting the body: what an open webhook would accept is "the customer messaged us", which is exactly the fact the seller acts on.
+- Delivery and read receipts are ignored. A receipt is generated by our own outbound message and would otherwise hold the window open in the UI while Meta considers it shut.
+- Optional throughout. With no credentials nothing sends, the webhook stays closed, and the web cart carries the session exactly as before.
+- Message copy lives in one module with Spanish and English, chosen by `WHATSAPP_MESSAGE_LOCALE`. Spanish is the default and the shipping copy; English exists for testing, and a test pins the default so nobody ships English to Colombian buyers by forgetting.
+- Two of the specification's assumptions about the platform were wrong, and both are recorded in [the plan](WHATSAPP.md): a WhatsApp *video* call does not open the messaging window, and "sent freely" meant without template approval rather than without cost.
 
 ### Language
 - Spanish and English on every customer screen and the Colombia panel, switched from the header and remembered in a cookie for a year. The USA seller/admin dashboard stays English.
@@ -133,48 +150,37 @@ seller tabs, all three Colombia views and the customer screens.
 
 ## Remaining
 
-### 1. Nothing reaches the customer automatically
-The single biggest functional gap, and the one the client's own designs assume
-is closed. Screen 3 of the design document says: "After payment, the customer
-receives the WhatsApp video call link."
+### 1. WhatsApp reaches the customer; the templates do not exist yet
+Specification screen 3 -- "After payment, the customer receives the WhatsApp
+video call link" -- is built. When the booking payment is confirmed, the Stripe
+webhook sends the customer their order link over WhatsApp, and section 7.1's
+product echo follows during the live session. See
+[WhatsApp integration plan](WHATSAPP.md) for the platform rules that shape it.
 
-They do not. There is no outbound messaging of any kind in the codebase -- no
-WhatsApp, no email, no SMS. After paying the booking fee the customer is
-redirected to their order page, and that browser tab is their only copy of it.
-If they close it, the seller has to copy the link and send it by hand, which
-makes the seller a required step in every booking.
+What is not done is the part only the client can start. Meta refuses free text
+to anyone who has not messaged the business in the last 24 hours, and a booking
+is routinely made days ahead, so the confirmation has to go as an **approved
+template**. Three are drafted in the plan document. Creating them needs the
+client's Meta Business Account and Business Verification, which takes days.
 
-The link itself is now ready to be sent: it carries its own access token, works
-on any device, and stays valid for 90 days (see "Customer order links"). That
-was the prerequisite -- emailing a link that only worked in one browser profile
-would have been worse than not sending one.
+Until a template exists the confirmation is sent as free text, which only
+reaches a customer whose window happens to be open -- in practice, a tester.
+The code prefers the template whenever `WHATSAPP_TEMPLATE_BOOKING` names one,
+so nothing changes but the environment.
 
-Two independent pieces of work:
+Still worth adding, and independent of Meta: **a booking confirmation email**.
+It needs an email provider and nothing else, and it covers the customer who
+gives a phone number WhatsApp does not reach.
 
-- **A booking confirmation email.** Needs an email provider and nothing from
-  Meta. Closes the gap on its own and is the smaller job.
-- **WhatsApp Cloud API** (specification 7.1), which also asks for a text echo of
-  each product as the seller adds it. See
-  [WhatsApp integration plan](WHATSAPP.md): a no-template, no-cost path exists
-  that needs nothing from the client to build or demo. Proactive status pushes
-  need a Meta business account, Business Verification, phone-number ID, access
-  token and verify token.
+### 2. Nothing is sent when the session starts
+The customer is told their session has begun only if they are looking at their
+order page. A short message when the seller presses Start would carry them
+there, and would open the messaging window for the echo that follows. One more
+message per order, so it is a product decision rather than a technical one.
 
-### 2. WhatsApp Cloud API notifications
-Specification section 7.1 asks for a WhatsApp text echo of each product as the
-seller adds it. None of this is built; the WhatsApp references in the UI are
-icons and links only.
-
-Two of the specification's assumptions turned out to be wrong — a video call
-does not open the 24-hour messaging window, and "sent freely" referred to
-template approval rather than cost. A build path that needs no template
-approvals and no Business Verification is written up in
-[WhatsApp integration plan](WHATSAPP.md), along with the pricing change Meta
-applies from 1 October 2026.
-
-Needs from the client only if proactive status pushes are wanted: a Meta
-business account, Business Verification, phone-number ID, access token and
-verify token.
+Past the session, nothing is pushed at all -- invoice ready, payment confirmed,
+shipped, delivered. The client never asked for these and screen 4 of his own
+design puts them on the order timeline, which is built.
 
 ### 3. Automatic courier tracking — blocked on carrier selection
 Specification section 10 suggests routing a courier's "delivered" webhook into
@@ -196,31 +202,31 @@ change, but it needs no new mechanism.
 
 Still a product decision for the client: whether the Miami seller wants it.
 
-### 5. Polling instead of realtime
-The specification assumed Supabase Realtime. The customer and seller session
-views poll every 1.5 seconds and the Colombia panel every 5 seconds. This is
-correct but chatty: each open session page issues about 40 requests per minute.
-PostgreSQL `LISTEN`/`NOTIFY` behind Server-Sent Events is the natural upgrade
-before many sessions run concurrently.
+### 5. The Colombia panel still polls
+The customer's live cart now arrives over Supabase Realtime (see "Live session"),
+with polling kept underneath at 30 seconds because a socket can die quietly on a
+sleeping phone. The Colombia local-team panel still polls every 5 seconds. It is
+correct but chatty, and it is the one surface left where the specification's
+realtime model has not been applied.
 
 ### 6. Query efficiency in the operations panels
 `listBoxManifests` calls `listSessions()` and filters in JavaScript, and
 `/api/local-team` invokes that pair on every 5-second poll. Fine at current data
 volumes, worth scoping to the relevant sessions as history grows.
 
-### 7. Supabase Auth and Realtime
-The database is now hosted on Supabase, and row level security is enabled and
-verified (see Production hardening) — the deny-by-default floor is in place.
+### 7. Supabase Auth
+Row level security is enabled and verified (see Production hardening), and
+migration 018 added read policies for the three tables the customer's live cart
+subscribes to. Access is a signed claim naming one session, minted only for a
+caller that already proved it holds that session's customer access token — so
+Realtime shipped without needing `auth.uid()`, and the publishable key alone
+still reads nothing.
 
-Not yet built: Supabase Auth magic links for customers, per-customer RLS read
-policies, and read-only Realtime subscriptions replacing the polling in item 5.
-These three ship together and only become necessary together. Today no anon key
-has a path to the data, so the deny-everything floor is the correct posture;
-giving the browser a Realtime subscription is what would require the policies,
-and those in turn require an authenticated customer identity for `auth.uid()` to
-resolve — which specification section 8 assumes but never creates. Writes stay
-server-side regardless. Requires client sign-off on customers receiving a
-Supabase authentication email.
+Not built: Supabase Auth magic links for customers. The specification's section 8
+policies assume an `auth.uid()` that no section ever creates, and nothing today
+needs one. It becomes worth revisiting only if customers should sign in rather
+than hold a link — which requires client sign-off, since they would begin
+receiving a Supabase authentication email in place of the current secure link.
 
 ### 8. Deployment configuration
 Mostly done. The app is deployed on Vercel at `https://brash3-d.vercel.app`, the
@@ -265,9 +271,12 @@ on it.
 
 | Specification | Built instead | Why |
 | --- | --- | --- |
-| Supabase Realtime | Polling over `pg` | The app talks to Postgres directly as the table owner. Supabase hosts the database; its Auth and Realtime products are unused |
+| Supabase Realtime subscribed with the anon key | Realtime subscribed with a server-minted session claim | The app talks to Postgres as the table owner and hands no database key to a browser. The customer's socket carries a short-lived token naming one session, which migration 018's policies check per row — a subscription filter is chosen by the client and is worthless as a boundary |
 | Separate Node/Express backend | Next.js route handlers | One deployable unit |
-| Row Level Security policies (section 8) | RLS enabled with no policies, plus server-side authorization on every route | The spec's per-user policies need an `auth.uid()` no section ever creates. Migration 015 instead denies every role that is not the table owner, which closes Supabase's PostgREST endpoint to the publishable key; the route handlers remain the real authorization |
+| Row Level Security policies scoped on `auth.uid()` (section 8) | Deny-all floor (015), plus read policies scoped on a server-minted session claim (018) | The spec's per-user policies need an `auth.uid()` no section ever creates. Migration 015 denies every role that is not the table owner, closing Supabase's PostgREST endpoint to the publishable key; 018 reopens SELECT on exactly three tables to a claim the server issues. Route handlers remain the real authorization |
+| Commission fixed at `FEE_RATE` for the whole business (section 3) | Set per order by the seller | The client prices by the deal — 10% against a budget, 15% on a split, 20-30% when Brash3D fronts the purchase. One business-wide rate cannot express any of it |
+| A local Brash3D SAS invoice on request (section 14) | Offer withdrawn | The spec names the feature but not its cost: a formal sale inside Colombia carries 19% IVA, and the client's customers refuse to pay it. It invited money into the entity the rest of the design keeps money out of |
+| Up-front share left open (section 1 states 65%) | Never below 50% | The client's one constant across every pricing model he described. That money funds the purchase at the outlet |
 | Invoice computed in the browser (section 6) | Computed in PostgreSQL | The spec contradicts its own section 3 and would let a browser set any total |
 | Referral dedupe by `reserva_id` (section 12.1) | Dedupe by `referido_id`, plus a monthly cap | The spec's version grants a second reward on a referred customer's second booking |
 | Delivery marked before the charge clears (section 10) | Receipt required, Stripe confirmed by webhook only | The spec would record a declined card as delivered and paid |

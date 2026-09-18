@@ -62,9 +62,9 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { SESSION_LOAD_FAILED, useSession } from "@/lib/hooks/useSession"
+import { SESSION_LOAD_FAILED, useSession, type WhatsAppWindowState } from "@/lib/hooks/useSession"
 import { ConsolidatedBoxManifest, CustomerPurchaseHistory, EnvioEstado, SesionCompra, TimeSlot } from "@/lib/types"
-import { DEFAULT_INITIAL_PERCENTAGE, finalAmount, initialAmount, isValidPercentage } from "@/lib/payment-split"
+import { DEFAULT_INITIAL_PERCENTAGE, finalAmount, initialAmount, isValidCommissionPercentage, isValidPercentage, MINIMUM_INITIAL_PERCENTAGE } from "@/lib/payment-split"
 import { CopyToast, copyToast, type CopyToastState } from "@/components/copy-toast"
 import { copyText } from "@/lib/clipboard"
 import { dashboardTabHref, type DashboardTab } from "@/lib/dashboard-tabs"
@@ -448,6 +448,88 @@ function ReadOnlyOrderDetails({ session, isAdmin, onReopen }: { session: SesionC
   </Card>
 }
 
+/**
+ * The commission rate for this order, set before or during the call.
+ *
+ * Deliberately not part of the close dialog, where the up-front split lives.
+ * The customer watches their cart price itself live, so a rate that only
+ * appeared at close would show them 15% for the whole session and then move the
+ * total at the end -- which reads as a bait and switch even when the seller and
+ * the customer agreed 25% on the phone that morning.
+ */
+/**
+ * Whether the seller's product echoes will actually reach this customer.
+ *
+ * Meta only accepts a free-text message to someone who messaged the business in
+ * the last 24 hours, and the video call does not count. Without this the seller
+ * discovers that mid-call, one rejected send at a time, with the customer
+ * waiting -- so the state is shown before the first product is added, while
+ * there is still time to ask them to tap the button on their screen.
+ */
+function WhatsAppStatusCard({ window, customerName }: { window: WhatsAppWindowState; customerName: string }) {
+  const firstName = customerName.split(" ")[0] || customerName
+  return <Alert variant={window.open ? "default" : "destructive"}>
+    <WhatsAppIcon className="size-4" />
+    <AlertTitle>{window.open ? "WhatsApp chat is open" : "WhatsApp chat is not open"}</AlertTitle>
+    <AlertDescription>
+      {window.open
+        ? `Products you add are also sent to ${firstName} on WhatsApp.`
+        : `${firstName} has not messaged us, so WhatsApp cannot receive the cart. Ask them to tap "Abrir chat de WhatsApp" on their order page. The cart on their screen updates either way.`}
+    </AlertDescription>
+  </Alert>
+}
+
+function CommissionCard({ session, onChange }: { session: SesionCompra; onChange: (commissionPercentage: number) => Promise<void> }) {
+  const current = round2(session.tasaComision * 100)
+  const [value, setValue] = useState(String(current))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+
+  const parsed = Number(value)
+  const valid = isValidCommissionPercentage(parsed)
+  const dirty = valid && round2(parsed) !== current
+
+  async function save(next: number) {
+    setError("")
+    setSaving(true)
+    try {
+      await onChange(next)
+      setValue(String(round2(next)))
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Unable to update the commission")
+      setValue(String(current))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <Card>
+    <CardHeader>
+      <CardTitle className="text-xl">Commission</CardTitle>
+      <CardDescription>The rate agreed with this customer. Set it before adding products — the cart reprices live on their screen.</CardDescription>
+    </CardHeader>
+    <CardContent className="space-y-3">
+      <div className="grid grid-cols-4 gap-2">
+        {[10, 15, 20, 30].map((preset) => (
+          <Button key={preset} type="button" size="sm" variant={current === preset ? "default" : "outline"} disabled={saving} onClick={() => void save(preset)}>{preset}%</Button>
+        ))}
+      </div>
+      <div className="flex items-center gap-2">
+        <Input aria-label="Commission percentage" type="number" min="0" max="99" step="0.5" inputMode="decimal" className="h-9 w-24" value={value} disabled={saving} onChange={(event) => setValue(event.target.value)} />
+        <span className="text-sm text-muted-foreground">%</span>
+        {dirty && <Button type="button" size="sm" disabled={saving} onClick={() => void save(parsed)}>{saving ? "Saving…" : "Apply"}</Button>}
+      </div>
+      {!valid ? <p className="text-sm text-destructive">Enter a commission between 0 and 99.</p>
+        : <p className="text-xs text-muted-foreground">Charging {formatCurrency(session.comision)} on a {formatCurrency(session.subtotal)} subtotal.</p>}
+      {error && <p className="text-sm text-destructive">{error}</p>}
+    </CardContent>
+  </Card>
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
 function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }: { session: SesionCompra; open: boolean; onOpenChange: (open: boolean) => void; onConfirm: (initialPercentage: number) => Promise<void>; isActive: boolean }) {
   const [percentage, setPercentage] = useState(String(session.porcentajeInicial || DEFAULT_INITIAL_PERCENTAGE))
 
@@ -480,18 +562,18 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
       <div className="space-y-3">
         <div className="space-y-1">
           <Label htmlFor="initial-percentage">Paid up front</Label>
-          <p className="text-xs text-muted-foreground">Choose how much this customer pays now. The rest is collected on delivery.</p>
+          <p className="text-xs text-muted-foreground">Choose how much this customer pays now. The rest is collected on delivery. Never less than {MINIMUM_INITIAL_PERCENTAGE}%, which is what funds the purchase.</p>
         </div>
         <div className="grid grid-cols-4 gap-2">
-          {[100, 85, 65, 50].map((preset) => (
+          {[100, 85, 65, MINIMUM_INITIAL_PERCENTAGE].map((preset) => (
             <Button key={preset} type="button" size="sm" variant={parsed === preset ? "default" : "outline"} onClick={() => setPercentage(String(preset))}>{preset}%</Button>
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <Input id="initial-percentage" type="number" min="1" max="100" step="1" inputMode="numeric" className="h-9 w-24" value={percentage} onChange={(event) => setPercentage(event.target.value)} />
+          <Input id="initial-percentage" type="number" min={MINIMUM_INITIAL_PERCENTAGE} max="100" step="1" inputMode="numeric" className="h-9 w-24" value={percentage} onChange={(event) => setPercentage(event.target.value)} />
           <span className="text-sm text-muted-foreground">% up front</span>
         </div>
-        {!valid ? <p className="text-sm text-destructive">Enter a percentage between 1 and 100.</p> : <div className="space-y-1 border-t pt-3 text-sm">
+        {!valid ? <p className="text-sm text-destructive">Enter a percentage between {MINIMUM_INITIAL_PERCENTAGE} and 100.</p> : <div className="space-y-1 border-t pt-3 text-sm">
           <div className="flex justify-between gap-4"><span className="text-muted-foreground">Customer pays now</span><span className="font-semibold">{formatCurrency(upFront)}</span></div>
           <div className="flex justify-between gap-4"><span className="text-muted-foreground">{onDelivery > 0 ? "Collected on delivery" : "Nothing to collect on delivery"}</span><span className="font-semibold">{formatCurrency(onDelivery)}</span></div>
         </div>}
@@ -611,7 +693,7 @@ function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewH
 }
 
 export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
-  const { session, loading, error, addProduct, updateQuantity, removeProduct, close, reopenForCorrection, start, updateDeliveryStatus } = useSession(sessionId)
+  const { session, loading, error, addProduct, updateQuantity, removeProduct, close, setCommission, reopenForCorrection, start, updateDeliveryStatus, whatsappNumber, whatsappWindow } = useSession(sessionId)
   const [sessions, setSessions] = useState<SesionCompra[]>([])
   const [notifications, setNotifications] = useState<StaffNotification[]>([])
   const [activeNotificationId, setActiveNotificationId] = useState<string | null>(null)
@@ -985,6 +1067,13 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
       }
     }
 
+    // Throws rather than setting the panel error: the card owns its own message,
+    // beside the field the seller is looking at, and reverts the value it shows.
+    async function updateCommission(commissionPercentage: number) {
+      setActionError("")
+      await setCommission(commissionPercentage)
+    }
+
     async function createShipment() {
       setActionError("")
       try {
@@ -1027,7 +1116,7 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
               {isActive && <Card><CardHeader><CardTitle className="text-xl">Add product</CardTitle><CardDescription>Cart changes sync to the customer screen.</CardDescription></CardHeader><CardContent><form onSubmit={submitProduct} className="grid gap-3 sm:grid-cols-2"><div className="space-y-2 sm:col-span-2"><Label htmlFor="product-name">Product name</Label><Input id="product-name" name="nombre" required /></div><div className="space-y-2"><Label htmlFor="product-sku">SKU</Label><Input id="product-sku" name="sku" /></div><div className="space-y-2"><Label htmlFor="product-price">Price USD</Label><Input id="product-price" name="precio" type="number" min="0.01" step="0.01" required /></div><div className="space-y-2"><Label htmlFor="product-quantity">Quantity</Label><Input id="product-quantity" name="cantidad" type="number" min="1" defaultValue="1" /></div><div className="space-y-2"><Label htmlFor="product-notes">Notes</Label><Input id="product-notes" name="notas" /></div>{actionError && <p className="text-sm text-destructive sm:col-span-2">{actionError}</p>}<Button className="sm:col-span-2"><Plus />Add to cart</Button></form></CardContent></Card>}
               {session.estado === "completada" ? <ReadOnlyOrderDetails session={session} isAdmin={isAdmin} onReopen={reopenClosedSession} /> : <Card><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ShoppingCart />Cart ({session.productos.length})</CardTitle></CardHeader><CardContent className="space-y-3">{session.productos.length === 0 && <p className="py-8 text-center text-muted-foreground">No products yet.</p>}{session.productos.map((product) => <div key={product.id} className="flex items-center gap-3 rounded-md bg-muted p-3"><div className="min-w-0 flex-1"><p className="truncate font-medium">{product.nombre}</p><p className="text-xs text-muted-foreground">{product.sku || "No SKU"}{product.notas ? ` · ${product.notas}` : ""}</p></div><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, -1)}><Minus /></Button><span>{product.cantidad}</span><Button size="icon" variant="outline" onClick={() => void updateQuantity(product.id, 1)}><Plus /></Button><strong className="w-24 text-right">{formatCurrency(product.precio * product.cantidad)}</strong><Button size="icon" variant="ghost" onClick={() => void removeProduct(product.id)}><Trash2 /></Button></div>)}</CardContent></Card>}
             </div>
-            <aside className="min-w-0 space-y-6"><Card><CardHeader><CardTitle className="text-xl">Order summary</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(session.subtotal)}</span></div><div className="flex justify-between"><span>Tax {formatPercent(session.tasaImpuesto)}</span><span>{formatCurrency(session.impuesto)}</span></div><div className="flex justify-between"><span>Fee {formatPercent(session.tasaComision)}</span><span>{formatCurrency(session.comision)}</span></div><div className="flex justify-between pt-3 text-lg font-bold"><span>Total</span><span>{formatCurrency(session.total)}</span></div></CardContent></Card>{session.estado === "completada" && <Card><CardHeader><CardTitle className="text-xl">Customer delivery</CardTitle><CardDescription>{session.envio ? `Current status: ${shipmentStatusLabel(session.envio.estado)}` : "Create the shipment after the customer's up-front payment is confirmed."}</CardDescription></CardHeader><CardContent className="space-y-3">{session.deliveryAddress && <div className="rounded-md bg-muted p-3 text-sm"><p className="font-medium">Confirmed delivery address</p><p className="mt-1 text-muted-foreground">{session.deliveryAddress}</p><p className="text-muted-foreground">{session.deliveryCity}, {session.cliente.pais}</p></div>}{session.envio?.labelCode && <div className="rounded-md border p-3 text-sm"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><div className="min-w-0"><p className="text-xs text-muted-foreground">Customer shipment code</p><p className="mt-1 break-all font-mono font-semibold">{session.envio.labelCode}</p></div><Button type="button" size="sm" variant="outline" className="min-w-24 shrink-0 justify-center" onClick={() => void copyShipmentCode()}><Copy />{shipmentCodeCopied ? "Copied" : "Copy code"}</Button></div></div>}{nextDeliveryStep && hasInitialPayment(session) && <Button className="w-full" disabled={!session.deliveryAddress || !session.deliveryCity} onClick={() => void createShipment()}><Package />{nextDeliveryStep.label}</Button>}{!nextDeliveryStep && session.envio?.estado === "entregado" && <Badge><CheckCircle2 />Delivery confirmed</Badge>}{session.envio && session.envio.estado !== "entregado" && <p className="text-xs text-muted-foreground">USA operations handles consolidation. The local team owns receipt, final payment, and delivery confirmation.</p>}{!hasInitialPayment(session) && <p className="text-xs text-muted-foreground">Waiting for the customer to confirm their address and pay the up-front amount.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}<CloseSessionDialog session={session} open={closeDialogOpen} onOpenChange={setCloseDialogOpen} onConfirm={confirmCloseSession} isActive={isActive} /></aside>
+            <aside className="min-w-0 space-y-6">{isActive && whatsappNumber && whatsappWindow && <WhatsAppStatusCard window={whatsappWindow} customerName={session.cliente.nombre} />}{session.estado === "en_progreso" && <CommissionCard session={session} onChange={updateCommission} />}<Card><CardHeader><CardTitle className="text-xl">Order summary</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(session.subtotal)}</span></div><div className="flex justify-between"><span>Tax {formatPercent(session.tasaImpuesto)}</span><span>{formatCurrency(session.impuesto)}</span></div><div className="flex justify-between"><span>Fee {formatPercent(session.tasaComision)}</span><span>{formatCurrency(session.comision)}</span></div><div className="flex justify-between pt-3 text-lg font-bold"><span>Total</span><span>{formatCurrency(session.total)}</span></div></CardContent></Card>{session.estado === "completada" && <Card><CardHeader><CardTitle className="text-xl">Customer delivery</CardTitle><CardDescription>{session.envio ? `Current status: ${shipmentStatusLabel(session.envio.estado)}` : "Create the shipment after the customer's up-front payment is confirmed."}</CardDescription></CardHeader><CardContent className="space-y-3">{session.deliveryAddress && <div className="rounded-md bg-muted p-3 text-sm"><p className="font-medium">Confirmed delivery address</p><p className="mt-1 text-muted-foreground">{session.deliveryAddress}</p><p className="text-muted-foreground">{session.deliveryCity}, {session.cliente.pais}</p></div>}{session.envio?.labelCode && <div className="rounded-md border p-3 text-sm"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><div className="min-w-0"><p className="text-xs text-muted-foreground">Customer shipment code</p><p className="mt-1 break-all font-mono font-semibold">{session.envio.labelCode}</p></div><Button type="button" size="sm" variant="outline" className="min-w-24 shrink-0 justify-center" onClick={() => void copyShipmentCode()}><Copy />{shipmentCodeCopied ? "Copied" : "Copy code"}</Button></div></div>}{nextDeliveryStep && hasInitialPayment(session) && <Button className="w-full" disabled={!session.deliveryAddress || !session.deliveryCity} onClick={() => void createShipment()}><Package />{nextDeliveryStep.label}</Button>}{!nextDeliveryStep && session.envio?.estado === "entregado" && <Badge><CheckCircle2 />Delivery confirmed</Badge>}{session.envio && session.envio.estado !== "entregado" && <p className="text-xs text-muted-foreground">USA operations handles consolidation. The local team owns receipt, final payment, and delivery confirmation.</p>}{!hasInitialPayment(session) && <p className="text-xs text-muted-foreground">Waiting for the customer to confirm their address and pay the up-front amount.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}<CloseSessionDialog session={session} open={closeDialogOpen} onOpenChange={setCloseDialogOpen} onConfirm={confirmCloseSession} isActive={isActive} /></aside>
           </div>
         </SidebarInset>
       </SidebarProvider>

@@ -14,9 +14,9 @@ Brash3D is a Next.js MVP for booking a live outlet-shopping session, managing it
 - Spanish or English on every customer screen and the Colombia local-team panel, switched from the header and remembered per visitor; English USA seller/admin dashboard.
 - Customer order links that carry their own access token, so an order opens in any browser, on any device, and again weeks after the booking.
 - Per-box settlement summary splitting Stripe revenue (US LLC) from the Colombia local operating fund.
-- Optional local Brash3D SAS invoice request, flagged through to the delivery manifest.
 - Configurable `TAX_RATE_FL` and `FEE_RATE`, recorded per session at booking time.
-- Per-order payment split: the seller sets how much is paid up front (100%, 85%, 65% or any figure), and the balance is collected on delivery.
+- Per-order commission: the seller sets the rate agreed with that customer (10%, 15%, 20%, 30% or any figure) from the live panel, and the cart reprices on the customer's screen.
+- Per-order payment split: the seller sets how much is paid up front (100%, 85%, 65% or any figure down to the 50% minimum), and the balance is collected on delivery.
 - Shared shadcn/ui components with neutral light and dark themes.
 
 ## Local setup

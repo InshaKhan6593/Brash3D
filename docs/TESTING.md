@@ -138,7 +138,7 @@ The customer screens are in Spanish.
 5. Enter customer details and complete the 20 USD Stripe Test Mode Checkout.
 6. Confirm the verified webhook changes the reservation from pending to confirmed.
 7. Abandon another checkout and confirm the slot becomes available after 15 minutes.
-8. Book again with **Necesito factura local de Brash3D SAS** ticked, and confirm the flag appears in the seller session header and the Colombia delivery list.
+8. Confirm no local-invoice checkbox is offered. The option was withdrawn (see entry 15 in [Specification decisions](SPEC_DECISIONS.md)); bookings made before that still show the badge in the seller session header and the Colombia delivery list.
 
 ## Manual Seller Dashboard Test
 
@@ -149,7 +149,9 @@ The customer screens are in Spanish.
 5. Use a row action to open the seller or secure customer session view.
 6. Use Book for customer to create a seller-side appointment.
 7. In a seller session, add products, change quantities, remove a product, and close the session.
-8. Sign out and confirm the seller page and APIs are no longer accessible.
+8. Set the commission from the live panel before adding a product, and confirm the cart prices at that rate rather than the `FEE_RATE` default. Change it again with products in the cart and confirm the fee and total both move.
+9. Confirm the close dialog refuses an up-front share below 50 percent, and that the commission control is gone once the session is closed.
+10. Sign out and confirm the seller page and APIs are no longer accessible.
 
 ## Live Synchronization Test
 
