@@ -155,6 +155,13 @@ designs and the 14-section technical specification).
 - The box expander used a bare `⌄` character while every other icon on the screen is lucide; it renders differently across platforms and is now `ChevronDown`.
 - Dropped the header count that repeated the active filter chip and, once the list paginated, no longer matched what was on screen. The footer states the range and the retention window instead.
 
+### Product entry is name, price, quantity
+- The client on the live session: "making codes and typing will be crazy and complicated". The form asked for five fields per item -- name, SKU, price, quantity, notes -- typed one-handed, mid-call, walking an outlet. SKU is the "codes" he named.
+- Entry is now the three fields that price the line. SKU and notes are gone from the form; their columns, the API parameters and every screen that displays them stay, so orders recorded before the change keep what they carry. Restoring a field is putting one input back.
+- The placeholders that only made sense while the fields were entered went with them: the live cart printed "No SKU" under every item, and the closed-order table now shows its SKU column only for an order that has one rather than a row of dashes.
+- Focus returns to the product name after each add, and the price and quantity inputs ask for numeric keypads, so a second item costs no taps.
+- **This is the cheapest part of the problem, not all of it.** Five fields to three is a real reduction and it removes the one he named, but it is still typing. Photographing the item and entering only a price, voice entry, or a favourites list of repeat products are the options that would actually change the interaction; each needs a decision from him first.
+
 ### Interface review
 A screen-by-screen pass over every page at desktop and 375 px, covering all five
 seller tabs, all three Colombia views and the customer screens.
