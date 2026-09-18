@@ -51,3 +51,8 @@ next-env.d.ts
 testsprite_tests/
 testsprite_tests/tmp/
 testsprite_tests/tmp/config.json
+
+# Per-developer tooling. .claude/launch.json names the dev server for the
+# Claude Code preview pane, which is a local convenience rather than part of
+# the project, in the same way as the editor artifacts above.
+.claude/
