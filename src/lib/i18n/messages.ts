@@ -60,6 +60,19 @@ export const MESSAGES = {
       loadError: "No pudimos cargar los horarios disponibles",
       bookingError: "No pudimos completar la reserva",
       checkoutError: "No pudimos abrir el pago seguro",
+      // A customer back on this page mid-payment -- from the browser's Back
+      // button or Stripe's own back arrow -- with their slot still on hold.
+      pendingTitle: "Tienes una reserva sin pagar",
+      pendingBody: (when: string, remaining: string) => `${when}. El horario sigue apartado para ti por ${remaining}.`,
+      continuePayment: "Continuar al pago",
+      pickAnother: "Elegir otro horario",
+      releasing: "Liberando horario...",
+      releaseError: "No pudimos liberar el horario. Inténtalo de nuevo.",
+      releasedNotice: "Cancelaste el pago y liberamos tu horario. Puedes elegirlo de nuevo o escoger otro.",
+      processingTitle: "Estamos confirmando tu pago",
+      processingBody: "Stripe recibió tu pago y tu reserva se confirma en unos segundos.",
+      confirmedTitle: "Tu reserva ya está confirmada",
+      viewOrder: "Ver mi pedido",
     },
 
     session: {
@@ -370,6 +383,17 @@ export const MESSAGES = {
       loadError: "We could not load the available times",
       bookingError: "We could not complete the booking",
       checkoutError: "We could not open the secure payment",
+      pendingTitle: "You have an unpaid booking",
+      pendingBody: (when: string, remaining: string) => `${when}. The time is still held for you for ${remaining}.`,
+      continuePayment: "Continue to payment",
+      pickAnother: "Choose another time",
+      releasing: "Releasing the time...",
+      releaseError: "We could not release the time. Please try again.",
+      releasedNotice: "You cancelled the payment and we released your time. You can pick it again or choose another.",
+      processingTitle: "We are confirming your payment",
+      processingBody: "Stripe received your payment and your booking will be confirmed in a few seconds.",
+      confirmedTitle: "Your booking is already confirmed",
+      viewOrder: "View my order",
     },
 
     session: {

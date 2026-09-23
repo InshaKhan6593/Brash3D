@@ -1,7 +1,8 @@
 "use client"
 
-import { FormEvent, useEffect, useMemo, useState } from "react"
-import { CalendarDays } from "lucide-react"
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import Link from "next/link"
+import { CalendarDays, Clock3 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,8 +14,75 @@ import { DEFAULT_COUNTRY } from "@/lib/countries"
 import { intlLocale } from "@/lib/i18n/locale"
 import { useLocale } from "@/lib/i18n/provider"
 import { formatAppointment } from "@/lib/appointment"
-import { customerSessionPath } from "@/lib/customer-link"
+import { CUSTOMER_ACCESS_PARAM, customerSessionPath } from "@/lib/customer-link"
 import { TimeSlot } from "@/lib/types"
+
+/**
+ * The booking this browser sent to Stripe and has not seen paid.
+ *
+ * Booking holds the slot for 15 minutes. A customer who comes back here from
+ * Stripe without paying -- the browser's Back button, or Stripe's own back
+ * arrow -- used to find their slot looking free (Back restores the page as it
+ * was before the hold) and then refused when they tried again, because their
+ * own hold was blocking it. Remembering which order went to Stripe lets this
+ * page ask the server about it and offer to resume or release.
+ *
+ * Only the order's id and its link are kept. Whether the hold is still live,
+ * and the Stripe link to resume it, always come from the server.
+ */
+const PENDING_BOOKING_KEY = "brash3d:pending-booking"
+
+interface PendingBooking {
+  sessionId: string
+  sessionUrl: string
+}
+
+function readPendingBooking(): PendingBooking | null {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(PENDING_BOOKING_KEY) || "null") as Partial<PendingBooking> | null
+    return value?.sessionId && value.sessionUrl ? { sessionId: value.sessionId, sessionUrl: value.sessionUrl } : null
+  } catch {
+    return null
+  }
+}
+
+function writePendingBooking(value: PendingBooking | null) {
+  try {
+    if (value) window.localStorage.setItem(PENDING_BOOKING_KEY, JSON.stringify(value))
+    else window.localStorage.removeItem(PENDING_BOOKING_KEY)
+  } catch { /* private mode: the banner simply does not appear */ }
+}
+
+function accessTokenOf(sessionUrl: string): string | null {
+  return new URL(sessionUrl, window.location.origin).searchParams.get(CUSTOMER_ACCESS_PARAM)
+}
+
+type HoldView =
+  | { status: "pending"; pending: PendingBooking; holdExpiresAt: string; startsAt: string; checkoutUrl: string | null }
+  | { status: "processing" | "confirmed"; pending: PendingBooking }
+
+type ReleaseOutcome = "released" | "processing" | "confirmed" | "failed"
+
+async function releaseHold(pending: PendingBooking): Promise<ReleaseOutcome> {
+  try {
+    const response = await fetch("/api/bookings/hold", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: pending.sessionId, accessToken: accessTokenOf(pending.sessionUrl) }),
+    })
+    if (response.status === 404) return "released"
+    if (!response.ok) return "failed"
+    const data = await response.json() as { status: ReleaseOutcome }
+    return data.status
+  } catch {
+    return "failed"
+  }
+}
+
+function formatRemaining(milliseconds: number): string {
+  const seconds = Math.max(0, Math.ceil(milliseconds / 1000))
+  return `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, "0")}`
+}
 
 interface BookingResult {
   checkoutUrl?: string
@@ -34,26 +102,137 @@ export default function Home() {
   const [loadingSlots, setLoadingSlots] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
+  const [hold, setHold] = useState<HoldView | null>(null)
+  const [releasing, setReleasing] = useState(false)
+  const [releasedNotice, setReleasedNotice] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
+  const checkoutCancelled = useRef<boolean | null>(null)
   const dateLocale = intlLocale(locale, DEFAULT_COUNTRY.locale)
 
-  useEffect(() => {
-    async function loadSlots() {
-      try {
-        const response = await fetch("/api/slots", { cache: "no-store" })
-        if (!response.ok) throw new Error("SLOTS_LOAD_FAILED")
-        const data = (await response.json()) as { slots: TimeSlot[] }
-        setSlots(data.slots)
-      } catch {
-        // Set as a marker rather than a sentence: the language can change after
-        // this runs, and a stored Spanish string would not follow the toggle.
-        setError("SLOTS_LOAD_FAILED")
-      } finally {
-        setLoadingSlots(false)
-      }
+  const loadSlots = useCallback(async () => {
+    try {
+      const response = await fetch("/api/slots", { cache: "no-store" })
+      if (!response.ok) throw new Error("SLOTS_LOAD_FAILED")
+      const data = (await response.json()) as { slots: TimeSlot[] }
+      setSlots(data.slots)
+    } catch {
+      // Set as a marker rather than a sentence: the language can change after
+      // this runs, and a stored Spanish string would not follow the toggle.
+      setError("SLOTS_LOAD_FAILED")
+    } finally {
+      setLoadingSlots(false)
     }
-
-    void loadSlots()
   }, [])
+
+  const release = useCallback(async (pending: PendingBooking): Promise<ReleaseOutcome> => {
+    const outcome = await releaseHold(pending)
+    if (outcome === "released") {
+      writePendingBooking(null)
+      setHold(null)
+      await loadSlots()
+    } else if (outcome === "processing" || outcome === "confirmed") {
+      setHold({ status: outcome, pending })
+    }
+    return outcome
+  }, [loadSlots])
+
+  /**
+   * Asks the server about the booking this browser last sent to Stripe.
+   *
+   * `cancelled` is Stripe's own back arrow (the checkout's cancel URL): the
+   * customer has said they are not paying, so the slot is released at once
+   * rather than left held for the rest of the 15 minutes.
+   */
+  const checkHold = useCallback(async (cancelled: boolean) => {
+    const pending = readPendingBooking()
+    if (!pending) return
+    try {
+      const token = accessTokenOf(pending.sessionUrl)
+      const response = await fetch(
+        `/api/bookings/hold?sessionId=${encodeURIComponent(pending.sessionId)}${token ? `&access=${encodeURIComponent(token)}` : ""}`,
+        { cache: "no-store" }
+      )
+      if (!response.ok) {
+        writePendingBooking(null)
+        setHold(null)
+        return
+      }
+      const data = await response.json() as { status: HoldView["status"] | "released"; holdExpiresAt?: string; startsAt?: string; checkoutUrl?: string | null }
+      if (data.status === "released") {
+        writePendingBooking(null)
+        setHold(null)
+        return
+      }
+      if (data.status === "pending" && cancelled) {
+        if (await release(pending) === "released") setReleasedNotice(true)
+        return
+      }
+      if (data.status === "pending") {
+        setHold({ status: "pending", pending, holdExpiresAt: data.holdExpiresAt!, startsAt: data.startsAt!, checkoutUrl: data.checkoutUrl ?? null })
+        return
+      }
+      // Paid. The notice is shown once; after that the order page is the record.
+      if (data.status === "confirmed") writePendingBooking(null)
+      setHold({ status: data.status, pending })
+    } catch {
+      // Unreachable server: the page still works, the banner just waits.
+    }
+  }, [release])
+
+  useEffect(() => {
+    // Read once per page load and kept, because the address bar is cleaned
+    // straight after -- so a reload does not release a second time -- and a
+    // re-run of this effect would otherwise no longer see it.
+    if (checkoutCancelled.current === null) {
+      checkoutCancelled.current = new URLSearchParams(window.location.search).get("checkout") === "cancelled"
+      if (checkoutCancelled.current) window.history.replaceState(null, "", "/")
+    }
+    const cancelled = checkoutCancelled.current
+    const initialLoad = window.setTimeout(() => {
+      void loadSlots()
+      void checkHold(cancelled)
+    }, 0)
+
+    // Back from Stripe usually restores this page from the browser's cache, as
+    // it was before the booking -- slots included -- without running anything
+    // above. Refreshed here so the grid and the banner are the real state.
+    function onPageShow(event: PageTransitionEvent) {
+      if (!event.persisted) return
+      setSubmitting(false)
+      void loadSlots()
+      void checkHold(false)
+    }
+    window.addEventListener("pageshow", onPageShow)
+    return () => {
+      window.clearTimeout(initialLoad)
+      window.removeEventListener("pageshow", onPageShow)
+    }
+  }, [checkHold, loadSlots])
+
+  // The countdown, and the moment the hold lapses: the banner goes and the
+  // grid is re-read, since the slot is free again.
+  const holdExpiresAt = hold?.status === "pending" ? new Date(hold.holdExpiresAt).getTime() : null
+  useEffect(() => {
+    if (holdExpiresAt === null) return
+    const timer = window.setInterval(() => {
+      const current = Date.now()
+      setNow(current)
+      if (current >= holdExpiresAt) {
+        writePendingBooking(null)
+        setHold(null)
+        void loadSlots()
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [holdExpiresAt, loadSlots])
+
+  async function pickAnotherTime() {
+    if (hold?.status !== "pending") return
+    setReleasing(true)
+    setError("")
+    if (await release(hold.pending) === "failed") setError("RELEASE_FAILED")
+    setReleasing(false)
+  }
 
   const slotsByDate = useMemo(() => {
     return slots.reduce<Record<string, TimeSlot[]>>((groups, slot) => {
@@ -79,14 +258,28 @@ export default function Home() {
       ? t.booking.bookingError
       : error === "CHECKOUT_FAILED"
         ? t.booking.checkoutError
+      : error === "RELEASE_FAILED"
+        ? t.booking.releaseError
         : error
 
   async function submitBooking(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setSubmitting(true)
     setError("")
+    setReleasedNotice(false)
 
     const form = new FormData(event.currentTarget)
+    // Booking again while an earlier hold is live means the customer has moved
+    // on from it -- possibly to the very same slot, which their own hold would
+    // otherwise block. Released first, so the new booking can have it.
+    if (hold?.status === "pending") {
+      const outcome = await release(hold.pending)
+      if (outcome !== "released") {
+        if (outcome === "failed") setError("RELEASE_FAILED")
+        setSubmitting(false)
+        return
+      }
+    }
     try {
       const response = await fetch("/api/bookings", {
         method: "POST",
@@ -115,6 +308,7 @@ export default function Home() {
         return
       }
       if (!data.checkoutUrl) throw new Error("CHECKOUT_FAILED")
+      if (data.session?.id && data.sessionUrl) writePendingBooking({ sessionId: data.session.id, sessionUrl: data.sessionUrl })
       window.location.assign(data.checkoutUrl)
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "BOOKING_FAILED")
@@ -134,6 +328,43 @@ export default function Home() {
             {t.booking.subtitle}
           </p>
         </header>
+
+        {hold?.status === "pending" && (
+          <Card className="border-primary/50" role="status" aria-live="polite">
+            <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <Clock3 className="mt-0.5 size-5 shrink-0" />
+                <div>
+                  <p className="font-semibold">{t.booking.pendingTitle}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {t.booking.pendingBody(
+                      formatAppointment(new Date(hold.startsAt), dateLocale, DEFAULT_COUNTRY.timeZone),
+                      formatRemaining(new Date(hold.holdExpiresAt).getTime() - now)
+                    )}
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 sm:shrink-0 sm:flex-row">
+                {hold.checkoutUrl && <Button type="button" onClick={() => window.location.assign(hold.checkoutUrl!)}>{t.booking.continuePayment}</Button>}
+                <Button type="button" variant="outline" disabled={releasing} onClick={() => void pickAnotherTime()}>
+                  {releasing ? t.booking.releasing : t.booking.pickAnother}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+        {(hold?.status === "processing" || hold?.status === "confirmed") && (
+          <Card role="status">
+            <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold">{hold.status === "processing" ? t.booking.processingTitle : t.booking.confirmedTitle}</p>
+                {hold.status === "processing" && <p className="text-sm text-muted-foreground">{t.booking.processingBody}</p>}
+              </div>
+              <Button asChild className="sm:shrink-0"><Link href={hold.pending.sessionUrl}>{t.booking.viewOrder}</Link></Button>
+            </CardContent>
+          </Card>
+        )}
+        {releasedNotice && <p role="status" className="rounded-md bg-muted px-4 py-3 text-sm">{t.booking.releasedNotice}</p>}
 
         <form onSubmit={submitBooking} className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
           <Card>

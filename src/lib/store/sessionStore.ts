@@ -576,6 +576,52 @@ export async function attachBookingCheckout(
   return Boolean(result.rowCount)
 }
 
+export interface BookingHold {
+  bookingId: string
+  estado: Reserva["estado"]
+  /** When the unpaid hold lapses. Only meaningful while `pendiente_pago`. */
+  holdExpiresAt: Date | null
+  checkoutSessionId: string | null
+  startsAt: Date
+  /** Still reserved for this customer and payable right now. */
+  active: boolean
+}
+
+/**
+ * The booking behind a customer's session, as far as its payment hold goes.
+ *
+ * Read by the booking page when a customer comes back to it mid-payment --
+ * the browser's Back button from Stripe, or Stripe's own back arrow -- so it
+ * can offer to resume the payment or release the slot, instead of leaving the
+ * customer locked out of their own slot until the hold lapses.
+ */
+export async function bookingHoldForSession(sessionId: string): Promise<BookingHold | null> {
+  const result = await query<{
+    id: string
+    estado: Reserva["estado"]
+    hold_expires_at: Date | null
+    checkout_session_id: string | null
+    fecha_hora: Date
+    active: boolean
+  }>(`
+    SELECT r.id::text, r.estado, r.hold_expires_at, r.checkout_session_id, r.fecha_hora,
+      (r.estado = 'pendiente_pago' AND r.hold_expires_at > now()) AS active
+    FROM sesiones_compra s
+    JOIN reservas r ON r.id = s.reserva_id
+    WHERE s.id::text = $1
+  `, [sessionId])
+  const row = result.rows[0]
+  if (!row) return null
+  return {
+    bookingId: row.id,
+    estado: row.estado,
+    holdExpiresAt: row.hold_expires_at,
+    checkoutSessionId: row.checkout_session_id,
+    startsAt: row.fecha_hora,
+    active: row.active,
+  }
+}
+
 export async function cancelBookingHold(bookingId: string, reason: string): Promise<void> {
   await transaction(async (client) => {
     const result = await client.query<{ disponibilidad_id: string }>(`

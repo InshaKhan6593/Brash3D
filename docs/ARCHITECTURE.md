@@ -13,6 +13,7 @@
 | `/local-team` | Colombia receiving, final collection, and delivery panel. |
 | `/api/slots` | Lists booking availability. |
 | `/api/bookings` | Creates and retrieves bookings. |
+| `/api/bookings/hold` | The customer's own unpaid hold: `GET` reports it and returns the Stripe link to resume, `POST` releases the slot. |
 | `/api/sessions` | Reads and mutates shopping sessions. |
 | `/api/shipping` | Seller/admin consolidated-box dispatch and manifests. |
 | `/api/local-team` | Colombia box receipt and delivery operations. |
@@ -86,6 +87,12 @@ order already in flight, never change where it goes.
 4. Stripe Test Mode Checkout collects the 20 USD booking fee.
 5. Only a signature-verified Stripe webhook confirms the reservation.
 6. Expired holds are released atomically; a late successful payment is refunded idempotently.
+   A customer who comes back from Stripe without paying -- the browser's Back
+   button or Stripe's own back arrow -- sees a banner on the booking page with
+   the held appointment and a countdown, and can continue to the same Stripe
+   checkout or choose another time. Stripe's back arrow releases the slot at
+   once. Releasing expires the Stripe checkout *before* freeing the slot, so a
+   payment already in flight can never land on a slot somebody else has taken.
 7. The customer opens the session page while the seller manages the cart.
 
 Slots are generated in one-hour intervals from 9:00 AM through 6:00 PM for the client-specified Nike Sawgrass outlet. A duplicate request for an active hold or confirmed slot receives a conflict response.
