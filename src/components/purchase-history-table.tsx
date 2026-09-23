@@ -78,7 +78,18 @@ export function PurchaseHistoryTable({ history, locale = "en" }: { history: Cust
       {inTransitCount > 0 && <Badge variant="outline" className="gap-1"><Truck />{copy.inTransit(inTransitCount)}</Badge>}
     </CardHeader>
     {history.purchases.length === 0 ? <CardContent className="flex min-h-36 items-center justify-center p-6 text-center text-sm text-muted-foreground">{copy.empty}</CardContent> : <CardContent className="p-0">
-      <Table className="w-full table-fixed">
+      {/* A phone has room for one column of text, not four: the order number
+          alone overran its 27% cell and printed over the product beside it. */}
+      <div className="divide-y sm:hidden">{history.purchases.map((purchase) => {
+        const firstProduct = purchase.products[0]
+        const extraProducts = Math.max(purchase.products.length - 1, 0)
+        return <div key={purchase.sessionId} className="space-y-1.5 px-4 py-3">
+          <div className="flex items-baseline justify-between gap-3"><p className="font-mono text-sm font-medium">ORD-{purchase.sessionId.slice(-8).toUpperCase()}</p><p className="shrink-0 font-semibold">{formatCurrency(purchase.total)}</p></div>
+          <p className="truncate text-sm">{firstProduct?.nombre || copy.noProduct}<span className="text-muted-foreground">{extraProducts > 0 ? ` · ${copy.more(extraProducts)}` : firstProduct ? ` · ${copy.qty(firstProduct.cantidad)}` : ""}</span></p>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><PurchaseStatusBadge purchase={purchase} copy={copy} /><span>{new Date(purchase.bookedAt).toLocaleDateString(dateLocale, { month: "short", day: "numeric", year: "numeric" })}</span>{purchase.trackingNumber && <span className="inline-flex min-w-0 items-center gap-1"><Truck className="size-3.5 shrink-0" /><span className="truncate font-mono">{purchase.trackingNumber}</span></span>}</div>
+        </div>
+      })}</div>
+      <Table className="hidden w-full table-fixed sm:table">
         <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-[27%] sm:w-[20%] lg:w-[17%]">{copy.columns.order}</TableHead><TableHead className="w-[34%] sm:w-[29%] lg:w-[25%]">{copy.columns.items}</TableHead><TableHead className="w-[24%] sm:w-[18%] lg:w-[17%]">{copy.columns.status}</TableHead><TableHead className="w-[15%] text-right sm:w-[14%] lg:w-[13%]">{copy.columns.total}</TableHead><TableHead className="hidden md:table-cell md:w-[13%] lg:w-[13%]">{copy.columns.payment}</TableHead><TableHead className="hidden lg:table-cell lg:w-[15%]">{copy.columns.tracking}</TableHead></TableRow></TableHeader>
         <TableBody>{history.purchases.map((purchase) => {
           const firstProduct = purchase.products[0]
