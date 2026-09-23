@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { SesionCompra } from "@/lib/types"
 import {
+  invoiceMessage,
   productLine,
+  sendInvoiceSummary,
   sendProductQuantityChanged,
   sendProductRemoved,
   sendProductUpdate,
@@ -270,5 +273,88 @@ describe("corrections to the cart", () => {
     const outcome = await sendProductRemoved("03241452724", "Gorra", 1)
     expect(outcome.status).toBe("failed")
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+// The echo carries line items only. When the seller closes the session the
+// customer receives the whole invoice -- the figures on the approved screen 4
+// design -- and the link to pay it, without opening the order page.
+describe("invoice at close", () => {
+  // Screen 4's own figures: $163 subtotal, 7% tax, 15% commission, $198.86.
+  function closedSession(overrides: Partial<SesionCompra> = {}): SesionCompra {
+    return {
+      productos: [
+        { id: "p1", nombre: "Tenis Nike Pegasus", precio: 95, cantidad: 1, addedAt: new Date() },
+        { id: "p2", nombre: "Medias", precio: 34, cantidad: 2, addedAt: new Date() },
+      ],
+      subtotal: 163,
+      impuesto: 11.41,
+      comision: 24.45,
+      total: 198.86,
+      tasaImpuesto: 0.07,
+      tasaComision: 0.15,
+      porcentajeInicial: 65,
+      ...overrides,
+    } as SesionCompra
+  }
+
+  const LINK = "https://brash3-d.vercel.app/session/s1?token=abc"
+
+  it("lists every product, the tax, the commission, the total and the split", () => {
+    expect(invoiceMessage(closedSession(), LINK)).toBe([
+      "Brash3D: your invoice is ready 🧾",
+      "",
+      "• Tenis Nike Pegasus — $95.00",
+      "• 2 x Medias — $68.00",
+      "",
+      "Subtotal: $163.00",
+      "Florida tax (7%): $11.41",
+      "Brash3D commission (15%): $24.45",
+      "*Invoice total: $198.86 USD*",
+      "",
+      "Up-front payment (65%): $129.26",
+      "Balance on delivery (35%): $69.60",
+      "",
+      "Confirm your delivery address and make your up-front payment here:",
+      LINK,
+    ].join("\n"))
+  })
+
+  // The two charges are derived by subtraction, so they add up to the invoice
+  // exactly -- the message must quote the same figures Stripe will charge.
+  it("quotes a split that adds up to the total", () => {
+    const text = invoiceMessage(closedSession({ total: 100.01, porcentajeInicial: 85 }), LINK)
+    expect(text).toContain("Up-front payment (85%): $85.01")
+    expect(text).toContain("Balance on delivery (15%): $15.00")
+  })
+
+  it("shows no balance for an order paid 100% up front", () => {
+    const text = invoiceMessage(closedSession({ porcentajeInicial: 100 }), LINK)
+    expect(text).toContain("Paid in full up front (100%): $198.86")
+    expect(text).not.toContain("Balance on delivery")
+  })
+
+  it("writes the commission the seller agreed, not a default", () => {
+    expect(invoiceMessage(closedSession({ tasaComision: 0.1 }), LINK)).toContain("Brash3D commission (10%)")
+    expect(invoiceMessage(closedSession({ tasaImpuesto: 0.065 }), LINK)).toContain("Florida tax (6.5%)")
+  })
+
+  it("writes Spanish by default", () => {
+    delete process.env.WHATSAPP_MESSAGE_LOCALE
+    const text = invoiceMessage(closedSession(), LINK)
+    expect(text).toContain("Brash3D: tu factura está lista")
+    expect(text).toContain("Impuesto Florida (7%): $11.41")
+    expect(text).toContain("Comisión Brash3D (15%): $24.45")
+    expect(text).toContain("Pago inicial (65%): $129.26")
+    expect(text).toContain("Saldo al entregar (35%): $69.60")
+  })
+
+  it("sends it as free text", async () => {
+    const fetchMock = stubFetch(200, { messages: [{ id: "wamid.INVOICE" }] })
+    const outcome = await sendInvoiceSummary("+57 300 123 4567", closedSession(), LINK)
+    expect(outcome).toEqual({ status: "sent", messageId: "wamid.INVOICE" })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.type).toBe("text")
+    expect(body.text.body).toContain(LINK)
   })
 })

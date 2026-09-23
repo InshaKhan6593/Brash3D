@@ -22,8 +22,10 @@ import {
   updateDeliveryStatus,
 } from "@/lib/store/sessionStore"
 import { windowState } from "@/lib/store/whatsappStore"
-import { businessNumber } from "@/lib/whatsapp/config"
+import { customerSessionUrl } from "@/lib/customer-link"
+import { appUrl, businessNumber } from "@/lib/whatsapp/config"
 import {
+  sendInvoiceSummary,
   sendProductQuantityChanged,
   sendProductRemoved,
   sendProductUpdate,
@@ -253,7 +255,22 @@ async function POSTHandler(request: Request) {
       )
     }
 
-    return NextResponse.json({ session })
+    // The echo only ever carried line items. Tax, commission and the payment
+    // split exist from this moment, so the customer who asked for their cart on
+    // WhatsApp gets the whole invoice there too, with their own link to pay.
+    // Same consent rule and the same failure rule as the echo: the invoice is
+    // already committed, and a failed send must not report a failed close.
+    //
+    // A fresh token, as the booking confirmation mints one: `rotateCustomerAccess`
+    // only inserts, so the customer's existing links keep working.
+    let invoiceEcho: SendOutcome = { status: "disabled" }
+    if (session.whatsappUpdates) {
+      const token = await rotateCustomerAccess(sessionId)
+      const link = customerSessionUrl(appUrl() ?? new URL(request.url).origin, sessionId, token)
+      invoiceEcho = await sendInvoiceSummary(session.cliente.telefono, session, link)
+    }
+
+    return NextResponse.json({ session, whatsapp: echoStatus(invoiceEcho) })
   }
 
   // The customer bought nothing. An ordinary outcome at an outlet, and without

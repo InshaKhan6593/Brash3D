@@ -2,7 +2,9 @@ import "server-only"
 
 import { logger } from "@/lib/logger"
 import { accessToken, apiVersion, canSend, phoneNumberId, productTemplate, templateLanguage } from "@/lib/whatsapp/config"
+import { clampPercentage, finalAmount, initialAmount, isPaidInFullUpFront } from "@/lib/payment-split"
 import { isSendable } from "@/lib/phone"
+import type { SesionCompra } from "@/lib/types"
 import { copy } from "@/lib/whatsapp/messages"
 
 /**
@@ -226,6 +228,57 @@ export async function sendProductQuantityChanged(
   quantity: number
 ): Promise<SendOutcome> {
   return sendText(to, copy().productUpdated(productLabel(name, quantity), (price * quantity).toFixed(2)))
+}
+
+/**
+ * The full invoice, sent when the seller closes the session.
+ *
+ * Free text only. The customer who asked for updates opened the 24-hour window
+ * during the call, and closing happens at the end of that same call, so the
+ * window is open in every case this is meant for. There is no approved invoice
+ * template to fall back to; if the window has somehow shut, the order page
+ * still shows the invoice and the seller can copy the link as before.
+ *
+ * Like every send here it returns an outcome and never throws: the session is
+ * already closed and invoiced, and a Meta outage must not undo that.
+ */
+export async function sendInvoiceSummary(to: string, session: SesionCompra, link: string): Promise<SendOutcome> {
+  return sendText(to, invoiceMessage(session, link))
+}
+
+export function invoiceMessage(session: SesionCompra, link: string): string {
+  const paidInFull = isPaidInFullUpFront(session.porcentajeInicial)
+  const initialPercentage = clampPercentage(session.porcentajeInicial)
+  return copy().invoice({
+    lines: session.productos.map((product) => ({
+      label: productLabel(product.nombre, product.cantidad),
+      amount: money(product.precio * product.cantidad),
+    })),
+    subtotal: money(session.subtotal),
+    taxRate: percent(session.tasaImpuesto * 100),
+    tax: money(session.impuesto),
+    commissionRate: percent(session.tasaComision * 100),
+    commission: money(session.comision),
+    total: money(session.total),
+    initialPercentage: percent(initialPercentage),
+    initial: money(initialAmount(session.total, session.porcentajeInicial)),
+    balance: paidInFull
+      ? undefined
+      : {
+        percentage: percent(100 - initialPercentage),
+        amount: money(finalAmount(session.total, session.porcentajeInicial)),
+      },
+    link,
+  })
+}
+
+function money(value: number): string {
+  return value.toFixed(2)
+}
+
+/** "7%", "6.5%" -- never "7.00%", which reads like a figure nobody chose. */
+function percent(value: number): string {
+  return `${Number(value.toFixed(2))}%`
 }
 
 /**
