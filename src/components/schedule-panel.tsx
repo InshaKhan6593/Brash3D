@@ -46,7 +46,7 @@ function HourSelect({ value, onChange, disabled, label }: {
   return (
     <select
       aria-label={label}
-      className="h-9 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
+      className="h-9 rounded-md border border-input bg-transparent px-2 text-base shadow-xs md:text-sm disabled:cursor-not-allowed disabled:opacity-50"
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}

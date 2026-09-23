@@ -27,7 +27,6 @@ export const MESSAGES = {
       live: "Sesión en vivo",
       order: "Seguimiento del pedido",
       bookAnother: "Reservar otra sesión",
-      bookAnotherShort: "Reservar",
     },
 
     booking: {
@@ -338,7 +337,6 @@ export const MESSAGES = {
       live: "Live session",
       order: "Order tracking",
       bookAnother: "Book another session",
-      bookAnotherShort: "Book",
     },
 
     booking: {

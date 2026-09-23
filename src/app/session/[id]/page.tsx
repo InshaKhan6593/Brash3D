@@ -281,7 +281,7 @@ function WhatsAppUpdatesButton({ sessionId, accessToken, enabled, chatHref, t }:
         type="button"
         onClick={dismiss}
         aria-label={t.session.whatsappUpdatesDismiss}
-        className="-m-1 shrink-0 rounded p-1 text-muted-foreground hover:text-foreground"
+        className="-m-2 shrink-0 rounded p-2 text-muted-foreground hover:text-foreground"
       >
         <X aria-hidden className="size-4" />
       </button>
@@ -549,8 +549,11 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
 
         </div>
 
+        {/* `min-w-0` on both columns: a grid item will not shrink below its
+            content by default, which left the live cart 10px wider than a
+            320px phone and the whole page scrolling sideways. */}
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.55fr)]">
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-6">
             {isLive && (
               <Card>
                 <CardContent className="flex flex-col justify-between gap-4 py-5 sm:flex-row sm:items-center">
@@ -621,7 +624,7 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
             {!isLive && <PurchaseHistoryCard history={history} locale={locale} />}
           </div>
 
-          <aside className="space-y-6 lg:sticky lg:top-24">
+          <aside className="min-w-0 space-y-6 lg:sticky lg:top-24">
             <Card>
               <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ReceiptText className="size-5" />{isLive ? t.session.runningTotal : t.session.invoiceSummary}</CardTitle><CardDescription>{isLive ? t.session.runningTotalNote : t.session.invoiceNote}</CardDescription></CardHeader>
               <CardContent className="space-y-3">

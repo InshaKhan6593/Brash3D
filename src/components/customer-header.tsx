@@ -33,14 +33,18 @@ export function CustomerHeader({ status = "booking" }: CustomerHeaderProps) {
           </span>
         </Link>
 
+        {/* On a phone the order badge, both toggles and the booking link were
+            38px wider than a 360px screen and pushed the page sideways over the
+            logo. The badge only repeats the page heading, so it waits for `sm`,
+            and the booking link shrinks to its icon. */}
         <nav className="flex shrink-0 items-center gap-2" aria-label={t.header.nav}>
           {status === "live" && <Badge>{t.header.live}</Badge>}
-          {status === "order" && <Badge variant="secondary">{t.header.order}</Badge>}
+          {status === "order" && <Badge variant="secondary" className="hidden sm:inline-flex">{t.header.order}</Badge>}
           <LanguageToggle />
           <ModeToggle />
           {showBookingLink && (
-            <Button asChild variant="outline" size="sm">
-              <Link href="/"><CalendarDays /><span className="hidden sm:inline">{t.header.bookAnother}</span><span className="sm:hidden">{t.header.bookAnotherShort}</span></Link>
+            <Button asChild variant="outline" size="sm" className="size-10 p-0 sm:size-auto sm:px-3">
+              <Link href="/" aria-label={t.header.bookAnother}><CalendarDays /><span className="hidden sm:inline">{t.header.bookAnother}</span></Link>
             </Button>
           )}
         </nav>
