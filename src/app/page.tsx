@@ -109,9 +109,11 @@ export default function Home() {
   const checkoutCancelled = useRef<boolean | null>(null)
   const dateLocale = intlLocale(locale, DEFAULT_COUNTRY.locale)
 
-  const loadSlots = useCallback(async () => {
+  // `fresh` skips the few seconds the CDN holds the slot list, for the moments
+  // this page has just changed a slot itself and must show it at once.
+  const loadSlots = useCallback(async (fresh = false) => {
     try {
-      const response = await fetch("/api/slots", { cache: "no-store" })
+      const response = await fetch(fresh ? `/api/slots?fresh=${Date.now()}` : "/api/slots", { cache: "no-store" })
       if (!response.ok) throw new Error("SLOTS_LOAD_FAILED")
       const data = (await response.json()) as { slots: TimeSlot[] }
       setSlots(data.slots)
@@ -129,7 +131,7 @@ export default function Home() {
     if (outcome === "released") {
       writePendingBooking(null)
       setHold(null)
-      await loadSlots()
+      await loadSlots(true)
     } else if (outcome === "processing" || outcome === "confirmed") {
       setHold({ status: outcome, pending })
     }
@@ -199,7 +201,8 @@ export default function Home() {
     function onPageShow(event: PageTransitionEvent) {
       if (!event.persisted) return
       setSubmitting(false)
-      void loadSlots()
+      // Fresh: the customer's own hold, placed seconds ago, must show.
+      void loadSlots(true)
       void checkHold(false)
     }
     window.addEventListener("pageshow", onPageShow)
@@ -220,7 +223,7 @@ export default function Home() {
       if (current >= holdExpiresAt) {
         writePendingBooking(null)
         setHold(null)
-        void loadSlots()
+        void loadSlots(true)
       }
     }, 1000)
     return () => window.clearInterval(timer)
@@ -312,6 +315,10 @@ export default function Home() {
       window.location.assign(data.checkoutUrl)
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "BOOKING_FAILED")
+      // Most often the slot was taken moments ago and the grid, served from a
+      // few seconds' cache, still showed it free. Re-read it fresh so the
+      // customer is not left choosing it again.
+      void loadSlots(true)
     } finally {
       setSubmitting(false)
     }
