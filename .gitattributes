@@ -1,0 +1,4 @@
+# Migrations are checksummed byte for byte by scripts/migrate.mjs. Keep them
+# LF on every platform, or a Windows checkout reports an applied migration as
+# changed.
+*.sql text eol=lf
