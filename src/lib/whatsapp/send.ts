@@ -1,5 +1,6 @@
 import "server-only"
 
+import { formatDuration } from "@/lib/booking-duration"
 import { logger } from "@/lib/logger"
 import { accessToken, apiVersion, canSend, phoneNumberId, productTemplate, templateLanguage } from "@/lib/whatsapp/config"
 import { clampPercentage, finalAmount, initialAmount, isPaidInFullUpFront } from "@/lib/payment-split"
@@ -259,6 +260,9 @@ export function invoiceMessage(session: SesionCompra, link: string): string {
     tax: money(session.impuesto),
     commissionRate: percent(session.tasaComision * 100),
     commission: money(session.comision),
+    extraTime: session.cargoExtension > 0
+      ? { duration: formatDuration(session.minutosExtension), amount: money(session.cargoExtension) }
+      : undefined,
     total: money(session.total),
     initialPercentage: percent(initialPercentage),
     initial: money(initialAmount(session.total, session.porcentajeInicial)),

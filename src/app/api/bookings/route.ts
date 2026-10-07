@@ -8,9 +8,11 @@ import {
   createBookingWithSession,
   getBooking,
 } from "@/lib/store/sessionStore"
+import { emailBookingConfirmation } from "@/lib/email/booking-confirmation"
 import { getStripe } from "@/lib/stripe"
 import { countryFor, DEFAULT_COUNTRY } from "@/lib/countries"
 import { toE164 } from "@/lib/phone"
+import { bookingPrice, DEFAULT_BOOKING_DURATION, formatDuration, isBookingDuration } from "@/lib/booking-duration"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -34,12 +36,28 @@ async function POSTHandler(request: Request) {
   const name = typeof body.nombre === "string" ? body.nombre.trim() : ""
   const city = typeof body.ciudad === "string" ? body.ciudad.trim() : ""
   const referralCode = typeof body.referralCode === "string" ? body.referralCode.trim() : ""
+  const tienda = typeof body.tienda === "string" ? body.tienda.trim() : ""
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
   if (!name || name.length > 255 || !emailValid || email.length > 255 || phone.length < 7 || phone.length > 50 || city.length > 100 || !body.slotId) {
     return NextResponse.json(
       { error: "Name, email, phone, and time slot are required" },
       { status: 400 }
     )
+  }
+
+  // The store the personal shopper goes to. The client sells many, promoted
+  // one by one on Instagram, so the customer names it.
+  if (tienda.length < 2 || tienda.length > 200) {
+    return NextResponse.json(
+      { error: "Escribe el outlet o la tienda donde quieres comprar.", code: "STORE_REQUIRED" },
+      { status: 400 }
+    )
+  }
+
+  // Absent means the one-hour booking every earlier client sent.
+  const duracionMinutos = body.duracionMinutos === undefined ? DEFAULT_BOOKING_DURATION : body.duracionMinutos
+  if (!isBookingDuration(duracionMinutos)) {
+    return NextResponse.json({ error: "Choose a booking length of 1 h, 1 h 30 min or 2 h" }, { status: 400 })
   }
 
   const country = countryFor(typeof body.pais === "string" ? body.pais : undefined)
@@ -66,13 +84,17 @@ async function POSTHandler(request: Request) {
     ciudad: city,
     pais: typeof body.pais === "string" && body.pais ? body.pais : DEFAULT_COUNTRY.name,
     referralCode,
+    tienda,
     requiresLocalInvoice: body.requiresLocalInvoice === true,
   }
 
   try {
-    const { booking, session, accessToken, rewardApplied } = await createBookingWithSession(customer, typeof body.slotId === "string" ? body.slotId : "")
+    const { booking, session, accessToken, rewardApplied } = await createBookingWithSession(customer, typeof body.slotId === "string" ? body.slotId : "", duracionMinutos)
     const customerCookie = customerAccessCookie()
     if (rewardApplied) {
+      // Confirmed outright with no Stripe webhook to follow, so the
+      // confirmation email goes from here.
+      await emailBookingConfirmation({ sessionId: session.id }, new URL(request.url).origin)
       const response = NextResponse.json({
         booking,
         session: { id: session.id },
@@ -92,8 +114,8 @@ async function POSTHandler(request: Request) {
         line_items: [{
           price_data: {
             currency: "usd",
-            unit_amount: 2_000,
-            product_data: { name: "Brash3D live shopping booking fee" },
+            unit_amount: Math.round(bookingPrice(duracionMinutos) * 100),
+            product_data: { name: `Brash3D live shopping booking (${formatDuration(duracionMinutos)})` },
           },
           quantity: 1,
         }],

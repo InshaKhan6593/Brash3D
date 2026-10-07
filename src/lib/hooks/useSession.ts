@@ -31,6 +31,8 @@ interface UseSessionReturn {
   cancelWithoutPurchase: () => Promise<void>
   /** The commission this order is priced at, settable until the invoice closes. */
   setCommission: (commissionPercentage: number) => Promise<void>
+  /** Thirty more minutes on the live call, added to the invoice. */
+  extend: () => Promise<void>
   reopenForCorrection: () => Promise<void>
   start: () => Promise<void>
   updateDeliveryStatus: (status: EnvioEstado) => Promise<void>
@@ -208,6 +210,10 @@ export function useSession(
     await mutate("cancelWithoutPurchase", {})
   }, [mutate])
 
+  const extend = useCallback(async () => {
+    await mutate("extend", {})
+  }, [mutate])
+
   const setCommission = useCallback(async (commissionPercentage: number) => {
     await mutate("setCommissionRate", { commissionPercentage })
   }, [mutate])
@@ -255,5 +261,5 @@ export function useSession(
     }
   }, [activeToken, sessionId])
 
-  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, cancelWithoutPurchase, setCommission, reopenForCorrection, start, updateDeliveryStatus, pay, refresh, recoveredToken, whatsappNumber, whatsappWindow }
+  return { session, loading, error, addProduct, updateQuantity, removeProduct, close, cancelWithoutPurchase, setCommission, extend, reopenForCorrection, start, updateDeliveryStatus, pay, refresh, recoveredToken, whatsappNumber, whatsappWindow }
 }

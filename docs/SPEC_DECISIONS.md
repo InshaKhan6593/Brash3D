@@ -94,10 +94,9 @@ partial unique index preventing two confirmed bookings on one slot, and a
 constraint keeping the hold state internally consistent. Hold length is
 configurable through `STRIPE_BOOKING_HOLD_MINUTES` (5–30, default 15).
 
-Holds are released whenever slots are read or a booking is attempted, rather
-than by a cron job. This is self-healing but leaves an abandoned slot locked
-until somebody loads the page. See "Remaining" item 7 in
-[Implementation status](IMPLEMENTATION_STATUS.md).
+Holds are released whenever slots are read or a booking is attempted, and by
+the scheduled maintenance job (`src/lib/store/maintenance.ts`), so an abandoned
+slot is freed even when nobody loads the page.
 
 ---
 
@@ -165,9 +164,10 @@ schema run in the Supabase SQL editor.
 through the pooler), with every tracked migration applied and row level
 security enabled on every public table. Docker Compose still serves local
 development and the test suite. What remains unused is Supabase's *products*:
-the app connects over `pg` as the table owner, so Auth and Realtime are not in
-play and no key of any kind reaches a browser. The session views still poll
-every 1.5 seconds.
+the app connects over `pg` as the table owner, so Auth is not in play and no
+database key reaches a browser. The customer's live cart subscribes through
+Realtime with a server-minted, session-scoped claim (migration 018), with
+polling beneath it.
 
 **Agreed direction — Supabase Postgres and Realtime, with server-authoritative
 writes.** This gives the client everything section 1 asked for without inheriting
@@ -555,3 +555,63 @@ never discard an order that has products in it, and pinned in both directions by
 
 The filters had to follow. "Upcoming" keyed only on `completada`, so a
 no-purchase session would have sat in the seller's default view for good.
+
+---
+
+## 19. Time is sold in half hours, and a call can be extended
+
+**Specification, §1 and §5.** One-hour slots and a fixed 20 USD booking fee.
+
+**The client's notes (October 2026):** start times every half hour ("9:30,
+10:30…"), labelled Florida time, priced at "20 USD por hora, 30 minutos
+adicionales 10 USD", one customer at a time, and the seller able to extend a
+call already under way without the customer booking again.
+
+**Resolved:** `disponibilidad` is a 30-minute grid. The customer books 1 h, 1 h
+30 or 2 h (20, 30, 40 USD), and a booking covers `duracion_minutos` from its
+start slot, locking every half hour it spans so overlapping bookings serialise
+and the second is refused. The seller extends by 30 minutes when the next half
+hour is free, adding 10 USD to the invoice (`cargo_extension`). A trigger on
+`reservas` keeps the availability flags in step (migration 021).
+
+Two decisions taken while building it, for the client to confirm:
+
+- **The extension is untaxed and carries no commission.** It is Brash3D's own
+  service, not merchandise bought in Florida.
+- **A referral reward covers a one-hour booking.** It is worth the 20 USD first
+  hour; a longer booking is paid in full and keeps the reward for later, rather
+  than half-spending it on a hold that may expire.
+
+## 20. Extra time is charged even when nothing is bought
+
+Not in the specification. A call can now be extended (entry 19), and the
+customer may still buy nothing.
+
+**Resolved:** the extra time is charged, as the booking fee is. The session
+closes as an invoice for the extension alone, paid 100% up front, with no
+delivery address, no shipment and no referral reward (`isExtraTimeOnly`). Without
+an extension, ending with no purchase still cancels outright (entry 18).
+
+## 21. The customer names the store
+
+**Specification and designs:** one outlet, Nike Sawgrass.
+
+**The client's notes:** the business promotes many stores on Instagram, and a
+customer arriving from an ad should write the store they saw, in a blank inside
+"Cita seleccionada".
+
+**Resolved:** a required "Outlet o tienda" field, stored as typed in
+`reservas.tienda_solicitada` (migration 022) and shown to the seller, on the
+order page, and in the WhatsApp and email confirmations. Older bookings fall
+back to the seller's assigned outlet.
+
+## 22. Brand and booking email
+
+**The client's notes:** use the Mi Global Shopper brand with Brash3D as the main
+company, and send the appointment to the customer's and the personal shopper's
+calendars through the email field.
+
+**Resolved:** customer screens and the email carry the Mi Global Shopper logo;
+staff screens carry the Brash3D Technologies wordmark. The booking confirmation
+is emailed through Resend with a calendar invitation to both. It reaches real
+recipients only once the client verifies a sending domain in Resend.

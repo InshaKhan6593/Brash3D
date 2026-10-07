@@ -23,6 +23,34 @@ export function newFixtures(): Fixtures {
 
 let slotOffset = 0
 
+/**
+ * Free consecutive half-hour slots on one far-future day, as the booking page
+ * would see them, returning their ids in time order. A booking starts at the
+ * first and spans as many as its length needs (two for an hour).
+ *
+ * Idempotent on the date/time key, so a row left behind by an earlier run is
+ * reused and freed rather than colliding with the unique index.
+ */
+export async function freeHalfHours(
+  fixtures: Fixtures,
+  dayOffset: number,
+  startHour: number,
+  count: number
+): Promise<string[]> {
+  const result = await query<{ id: string; hora: string }>(`
+    INSERT INTO disponibilidad (vendedor_id, fecha, hora_inicio, hora_fin, disponible)
+    SELECT $1::uuid, current_date + ($2 * interval '1 day'),
+      make_time($3, 0, 0) + n * interval '30 minutes',
+      make_time($3, 0, 0) + (n + 1) * interval '30 minutes', true
+    FROM generate_series(0, $4 - 1) n
+    ON CONFLICT (vendedor_id, fecha, hora_inicio) DO UPDATE SET disponible = true
+    RETURNING id::text, hora_inicio::text AS hora
+  `, [SELLER_ID, dayOffset, startHour, count])
+  const ids = result.rows.sort((a, b) => a.hora.localeCompare(b.hora)).map((row) => row.id)
+  fixtures.slots.push(...ids)
+  return ids
+}
+
 export async function createCustomer(
   fixtures: Fixtures,
   // `nombre` matters for the shipment label, which is derived from it.
@@ -85,9 +113,14 @@ export async function createSession(
     INSERT INTO sesiones_compra (
       reserva_id, vendedor_id, cliente_id, estado, started_at,
       tasa_impuesto, tasa_comision, total, monto_pagado_inicial,
-      direccion_entrega, ciudad_entrega, direccion_confirmada_at, porcentaje_inicial
+      direccion_entrega, ciudad_entrega, direccion_confirmada_at, porcentaje_inicial,
+      subtotal
     )
-    VALUES ($1::uuid, $2::uuid, $3::uuid, $4, now(), $5, $6, $7, $8, $9, $10, $11, $12)
+    -- The merchandise behind the total, as closing would have priced it. A
+    -- closed order always has products; one with a total and no subtotal is an
+    -- invoice for extra call time alone, which ships nothing.
+    VALUES ($1::uuid, $2::uuid, $3::uuid, $4, now(), $5, $6, $7, $8, $9, $10, $11, $12,
+      round($7::numeric / (1 + $5::numeric + $6::numeric), 2))
     RETURNING id::text
   `, [
     booking.rows[0].id, SELLER_ID, customerId,

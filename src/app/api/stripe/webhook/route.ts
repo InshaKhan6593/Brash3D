@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger"
 import type Stripe from "stripe"
 import { clearSessionCheckout, processBookingCheckoutEvent, processSessionCheckoutEvent } from "@/lib/store/sessionStore"
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe"
+import { emailBookingConfirmation } from "@/lib/email/booking-confirmation"
 import { sendBookingConfirmation } from "@/lib/whatsapp/booking-confirmation"
 
 export const dynamic = "force-dynamic"
@@ -100,7 +101,9 @@ async function POSTHandler(request: Request) {
   // booking is confirmed and paid either way, and a 500 here would have Stripe
   // retry an event already applied.
   if (outcome === "confirmed") {
-    await sendBookingConfirmation(checkout.id, new URL(request.url).origin)
+    const origin = new URL(request.url).origin
+    await sendBookingConfirmation(checkout.id, origin)
+    await emailBookingConfirmation({ checkoutSessionId: checkout.id }, origin)
   }
 
   logger.info("Stripe booking checkout processed", { eventId: event.id, type: event.type, outcome })

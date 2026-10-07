@@ -15,6 +15,7 @@ import {
   removeProductFromSession,
   cancelSessionWithoutPurchase,
   closeSession,
+  extendSession,
   reopenSessionForCorrection,
   rotateCustomerAccess,
   setCommissionRate,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/store/sessionStore"
 import { windowState } from "@/lib/store/whatsappStore"
 import { customerSessionUrl } from "@/lib/customer-link"
+import { isExtraTimeOnly } from "@/lib/order-kind"
 import { appUrl, businessNumber } from "@/lib/whatsapp/config"
 import {
   sendInvoiceSummary,
@@ -273,9 +275,24 @@ async function POSTHandler(request: Request) {
     return NextResponse.json({ session, whatsapp: echoStatus(invoiceEcho) })
   }
 
+  // Thirty more minutes on a live call, billed on this order's invoice. Refused
+  // when the half hour after the call is outside opening hours or already
+  // belongs to the next customer; the call then ends as booked.
+  if (action === "extend") {
+    const result = await extendSession(sessionId)
+    if (result.status === "extended") return NextResponse.json({ session: result.session })
+    const reasons = {
+      not_live: "Only a session in progress can be extended",
+      after_closing: "The next half hour is outside opening hours",
+      next_slot_taken: "The next half hour is already booked by another customer",
+    } as const
+    return NextResponse.json({ error: reasons[result.status], code: result.status }, { status: 409 })
+  }
+
   // The customer bought nothing. An ordinary outcome at an outlet, and without
-  // it the appointment has no exit: `close` requires a total above zero, so an
-  // empty session stayed `en_progreso` indefinitely.
+  // it the appointment has no exit: `close` requires products, so an empty
+  // session stayed `en_progreso` indefinitely. If the call was extended, it
+  // ends as an invoice for the extra time instead of being cancelled.
   if (action === "cancelWithoutPurchase") {
     const session = await cancelSessionWithoutPurchase(sessionId)
     if (!session) {
@@ -290,7 +307,15 @@ async function POSTHandler(request: Request) {
         { status: 409 }
       )
     }
-    return NextResponse.json({ session })
+    // Ended with extra call time and nothing bought: that is still an invoice,
+    // so the customer who asked for updates gets it on WhatsApp like any other.
+    let invoiceEcho: SendOutcome = { status: "disabled" }
+    if (session.estado === "completada" && session.whatsappUpdates) {
+      const token = await rotateCustomerAccess(sessionId)
+      const link = customerSessionUrl(appUrl() ?? new URL(request.url).origin, sessionId, token)
+      invoiceEcho = await sendInvoiceSummary(session.cliente.telefono, session, link)
+    }
+    return NextResponse.json({ session, whatsapp: echoStatus(invoiceEcho) })
   }
 
   if (action === "reopenForCorrection") {
@@ -322,7 +347,9 @@ async function POSTHandler(request: Request) {
       // straight from the listing, so the reason has to be the actual one:
       // there is no panel to open and inspect.
       return NextResponse.json(
-        { error: targetSession.envio
+        { error: isExtraTimeOnly(targetSession)
+          ? "This invoice is for extra call time only. There is nothing to ship."
+          : targetSession.envio
           ? "This order already has a shipment"
           : targetSession.montoPagadoInicial <= 0
             ? "The customer's up-front payment has not been confirmed yet"

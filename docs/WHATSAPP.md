@@ -5,11 +5,13 @@ adds it. This document records what the platform actually allows, what it costs,
 and how the app is wired — because the specification's assumptions about the
 first two turned out to be wrong.
 
-**Built:** the send adapter, the product echo with an automatic template
-fallback, the customer's consent switch, the `wa.me` chat link carrying their
-order link, the inbound webhook, and the 24-hour window state the seller panel
-reads. **Not built:** sending the booking confirmation, which waits on an
-approved template.
+**Built:** the send adapter, the booking confirmation (template when one is
+configured, free text otherwise), the product echo with an automatic template
+fallback, the full invoice at close, the customer's consent switch, the `wa.me`
+chat link carrying their order link, the inbound webhook, and the 24-hour window
+state the seller panel reads. **Waiting on the client:** Business Verification,
+a production number and approved templates; production runs on a Meta test
+number that reaches only five allowlisted phones.
 
 ## The rule that shapes everything
 
@@ -247,23 +249,23 @@ This question should be settled before he starts Business Verification, because
 the number is named during that process and changing it afterwards means
 redoing display-name approval.
 
-## What the code will need
+## What the code does
 
-Section 7.1 only describes sending. Two-way messaging additionally needs:
+Section 7.1 only describes sending. Two-way messaging also needed, and has:
 
 - An inbound webhook (`GET` verification handshake plus `POST` message events)
   so customer replies are received and the window state is known.
-- A per-session message log so staff can see the thread.
 - A send adapter that, per the specification, never rolls back the cart insert
   when a send fails — the item still belongs on the invoice.
 
-## Environment variables (not yet used by any code)
+Not built: a per-session message log for staff to read the thread.
 
-```
-WHATSAPP_CLOUD_API_TOKEN=
-WHATSAPP_PHONE_NUMBER_ID=
-WHATSAPP_VERIFY_TOKEN=
-```
+## Environment variables
+
+Documented in `.env.example`: `WHATSAPP_CLOUD_API_TOKEN`,
+`WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_NUMBER`, `WHATSAPP_VERIFY_TOKEN`,
+`WHATSAPP_APP_SECRET`, the three `WHATSAPP_TEMPLATE_*` names,
+`WHATSAPP_MESSAGE_LOCALE` and `APP_URL`.
 
 ## When the chat never opens
 

@@ -6,11 +6,14 @@ import { generateCustomerToken } from "@/lib/auth"
 import { query, transaction } from "@/lib/db"
 import { DELIVERED_QUEUE_DAYS } from "@/lib/local-team"
 import { clampPercentage, DEFAULT_INITIAL_PERCENTAGE, finalAmount, initialAmount, type PaymentStage } from "@/lib/payment-split"
+import { bookingPrice, DEFAULT_BOOKING_DURATION, EXTENSION_MINUTES, EXTENSION_PRICE, slotsFor, type BookingDuration } from "@/lib/booking-duration"
 import { feeRate, referralRewardMonthlyCap, taxRate } from "@/lib/rates"
 import type { Cliente, CustomerPurchaseHistory, EnvioEstado, PagoFinalMetodo, Producto, Reserva, SesionCompra, TimeSlot, Vendedor } from "@/lib/types"
 
 export interface BookingCustomerInput extends Omit<Cliente, "id"> {
   referralCode?: string
+  /** The store the customer wants visited, as they typed it. */
+  tienda?: string
   requiresLocalInvoice?: boolean
 }
 
@@ -21,6 +24,7 @@ interface SessionRow extends QueryResultRow {
   vendedor_nombre: string
   vendedor_email: string
   tienda_asignada: string | null
+  tienda_solicitada: string | null
   cliente_id: string
   cliente_nombre: string
   cliente_email: string
@@ -33,6 +37,9 @@ interface SessionRow extends QueryResultRow {
   fecha_hora_programada: Date
   booking_estado: Reserva["estado"]
   booking_fee: string
+  duracion_minutos: number
+  minutos_extension: number
+  cargo_extension: string
   requiere_factura_local: boolean
   whatsapp_updates: boolean
   fecha_programada: string | null
@@ -93,11 +100,12 @@ function clientQuery(client: PoolClient): QueryExecutor {
 
 const SESSION_SELECT = `
   SELECT sc.id::text, sc.reserva_id::text, sc.vendedor_id::text,
-    v.nombre AS vendedor_nombre, v.email AS vendedor_email, v.tienda_asignada,
+    v.nombre AS vendedor_nombre, v.email AS vendedor_email, v.tienda_asignada, r.tienda_solicitada,
     sc.cliente_id::text, c.nombre AS cliente_nombre, c.email AS cliente_email,
     c.telefono AS cliente_telefono, c.ciudad AS cliente_ciudad, c.pais AS cliente_pais,
     sc.fecha_inicio, sc.started_at, sc.fecha_fin, r.fecha_hora AS fecha_hora_programada,
     r.estado AS booking_estado, r.monto_reserva::text AS booking_fee,
+    r.duracion_minutos, sc.minutos_extension, sc.cargo_extension::text,
     r.requiere_factura_local,
     r.fecha_hora::date::text AS fecha_programada,
     to_char(d.hora_inicio, 'HH24:MI') AS hora_programada, sc.estado,
@@ -121,8 +129,8 @@ const SESSION_SELECT = `
   LEFT JOIN envios e ON e.sesion_id = sc.id`
 
 function displayTime(value: string): string {
-  const hours = Number(value.split(":")[0])
-  return `${hours === 0 ? 12 : hours > 12 ? hours - 12 : hours}:00 ${hours >= 12 ? "PM" : "AM"}`
+  const [hours, minutes = 0] = value.split(":").map(Number)
+  return `${hours === 0 ? 12 : hours > 12 ? hours - 12 : hours}:${String(minutes).padStart(2, "0")} ${hours >= 12 ? "PM" : "AM"}`
 }
 
 function mapProduct(row: ProductRow): Producto {
@@ -168,8 +176,13 @@ function mapSession(row: SessionRow, products: Producto[]): SesionCompra {
     horaProgramada: row.hora_programada ? displayTime(row.hora_programada) : undefined,
     bookingEstado: row.booking_estado,
     bookingFee: Number(row.booking_fee),
+    duracionMinutos: row.duracion_minutos,
+    minutosExtension: row.minutos_extension,
+    cargoExtension: Number(row.cargo_extension),
     requiresLocalInvoice: row.requiere_factura_local,
-    outlet: row.tienda_asignada || undefined,
+    // The store the customer asked for; older bookings predate the field and
+    // show the seller's own outlet instead.
+    outlet: row.tienda_solicitada || row.tienda_asignada || undefined,
     fechaFin: row.fecha_fin ? new Date(row.fecha_fin) : undefined,
     estado: row.estado,
     productos: products,
@@ -225,28 +238,31 @@ function formatPercentage(value: number): string {
 const HORIZON = `(date_trunc('month', current_date) + interval '2 months - 1 day')::date`
 
 /**
- * Every open hour each active seller should have, derived from the weekly
- * template and any date exception. One row per seller/date/hour.
+ * Every open half hour each active seller should have, derived from the weekly
+ * template and any date exception. One row per seller/date/half hour, `hora`
+ * being its start.
  *
  * An exception wins over the template for its date: `abierto = false` closes it,
  * and `abierto = true` reopens it with its own hours, falling back to the
  * template's when those are null.
  */
-const SCHEDULED_HOURS = `
+const SCHEDULED_SLOTS = `
   SELECT
     v.id AS vendedor_id,
     day::date AS fecha,
-    hour
+    slot::time AS hora
   FROM vendedores v
   CROSS JOIN generate_series(current_date, ${HORIZON}, interval '1 day') day
   JOIN horarios_plantilla t
     ON t.vendedor_id = v.id AND t.dia_semana = EXTRACT(DOW FROM day)
   LEFT JOIN excepciones_calendario e
     ON e.vendedor_id = v.id AND e.fecha = day::date
+  -- Timestamps rather than times, so a 24:00 close does not wrap to midnight.
   CROSS JOIN LATERAL generate_series(
-    EXTRACT(HOUR FROM COALESCE(e.hora_apertura, t.hora_apertura))::int,
-    EXTRACT(HOUR FROM COALESCE(e.hora_cierre, t.hora_cierre))::int - 1
-  ) hour
+    day + COALESCE(e.hora_apertura, t.hora_apertura),
+    day + COALESCE(e.hora_cierre, t.hora_cierre) - interval '30 minutes',
+    interval '30 minutes'
+  ) slot
   WHERE v.activo = true
     AND COALESCE(e.abierto, t.abierto) = true
 `
@@ -282,10 +298,10 @@ export async function pruneUnscheduledSlots(): Promise<number> {
     WHERE d.fecha >= current_date
       AND NOT EXISTS (SELECT 1 FROM reservas r WHERE r.disponibilidad_id = d.id)
       AND NOT EXISTS (
-        SELECT 1 FROM (${SCHEDULED_HOURS}) s
+        SELECT 1 FROM (${SCHEDULED_SLOTS}) s
         WHERE s.vendedor_id = d.vendedor_id
           AND s.fecha = d.fecha
-          AND make_time(s.hour, 0, 0) = d.hora_inicio
+          AND s.hora = d.hora_inicio
       )
   `)
   return result.rowCount ?? 0
@@ -330,32 +346,26 @@ export async function getTimeSlots(): Promise<TimeSlot[]> {
   // nothing to add writes nothing and holds no locks. ON CONFLICT stays for
   // the one race left: two calls generating the same new day at once.
   const batch = await query<SlotRow>(`
+    -- A new half hour can already sit inside a booking -- the 9:30 of an
+    -- hour booked at 9:00 before slots were halved -- so its flag is computed
+    -- rather than assumed free.
     INSERT INTO disponibilidad (vendedor_id, fecha, hora_inicio, hora_fin, disponible)
-    SELECT s.vendedor_id, s.fecha, make_time(s.hour, 0, 0), make_time(s.hour + 1, 0, 0), TRUE
-    FROM (${SCHEDULED_HOURS}) s
+    SELECT s.vendedor_id, s.fecha, s.hora, s.hora + interval '30 minutes',
+      NOT franja_ocupada(s.vendedor_id, s.fecha, s.hora)
+    FROM (${SCHEDULED_SLOTS}) s
     WHERE NOT EXISTS (
       SELECT 1 FROM disponibilidad existing
       WHERE existing.vendedor_id = s.vendedor_id
         AND existing.fecha = s.fecha
-        AND existing.hora_inicio = make_time(s.hour, 0, 0)
+        AND existing.hora_inicio = s.hora
     )
     ON CONFLICT (vendedor_id, fecha, hora_inicio) DO NOTHING;
 
-    WITH expired AS (
-      UPDATE reservas
-      SET estado = 'cancelada', cancellation_reason = 'hold_expired'
-      WHERE estado = 'pendiente_pago' AND hold_expires_at <= now()
-      RETURNING disponibilidad_id
-    )
-    UPDATE disponibilidad d
-    SET disponible = true
-    WHERE d.id IN (SELECT disponibilidad_id FROM expired)
-      AND NOT EXISTS (
-        SELECT 1 FROM reservas r
-        WHERE r.disponibilidad_id = d.id
-          AND (r.estado IN ('confirmada', 'completada')
-            OR (r.estado = 'pendiente_pago' AND r.hold_expires_at > now()))
-      );
+    -- Freeing the half hours an expired hold covered is the trigger's job
+    -- (migration 021), which knows how long each booking was.
+    UPDATE reservas
+    SET estado = 'cancelada', cancellation_reason = 'hold_expired'
+    WHERE estado = 'pendiente_pago' AND hold_expires_at <= now();
 
     SELECT d.id::text, d.fecha::text AS date, to_char(d.hora_inicio, 'HH24:MI') AS start_time,
       -- The instant the slot actually begins. The date and start_time above
@@ -389,9 +399,21 @@ export async function getTimeSlots(): Promise<TimeSlot[]> {
   }))
 }
 
+/**
+ * Books `duracionMinutos` starting at `slotId`: that half hour and the ones
+ * after it, all of which must exist (inside opening hours) and be free.
+ *
+ * Every half hour the booking spans is locked, in time order, before anything
+ * is checked. Two bookings that overlap share at least one locked row, so the
+ * second waits for the first and then sees it -- one customer at a time, which
+ * is the rule. Ordering the locks means two overlapping requests cannot each
+ * hold a row the other needs. The trigger on reservas (migration 021) marks
+ * the span unavailable when the booking is inserted.
+ */
 export async function createBookingWithSession(
   customer: BookingCustomerInput,
-  slotId: string
+  slotId: string,
+  duracionMinutos: BookingDuration = DEFAULT_BOOKING_DURATION
 ): Promise<{ booking: Reserva; session: SesionCompra; accessToken: string; rewardApplied: boolean }> {
   return transaction(async (client) => {
     const slotResult = await client.query<{
@@ -399,28 +421,39 @@ export async function createBookingWithSession(
       seller_id: string
       date: string
       start_time: string
-      available: boolean
     }>(`
       SELECT id::text, vendedor_id::text AS seller_id, fecha::text AS date,
-        to_char(hora_inicio, 'HH24:MI') AS start_time, disponible AS available
+        to_char(hora_inicio, 'HH24:MI') AS start_time
       FROM disponibilidad
       WHERE id::text = $1 AND fecha >= current_date
-      FOR UPDATE
     `, [slotId])
     const slot = slotResult.rows[0]
-    if (slot) await releaseExpiredBookingHolds(client, slotId)
+    if (!slot) throw new Error("SLOT_NOT_AVAILABLE")
 
-    const activeReservation = slot && await client.query(`
-      SELECT 1 FROM reservas
-      WHERE disponibilidad_id = $1::uuid
-        AND (estado IN ('confirmada', 'completada')
-          OR (estado = 'pendiente_pago' AND hold_expires_at > now()))
+    const spanValues = [slot.seller_id, slot.date, slot.start_time, duracionMinutos]
+    const span = await client.query(`
+      SELECT id FROM disponibilidad
+      WHERE vendedor_id = $1::uuid AND fecha = $2::date
+        AND hora_inicio >= $3::time
+        AND hora_inicio - $3::time < make_interval(mins => $4)
+      ORDER BY hora_inicio
+      FOR UPDATE
+    `, spanValues)
+    // Fewer rows than half hours means the booking would run past closing.
+    if (span.rowCount !== slotsFor(duracionMinutos)) throw new Error("SLOT_NOT_AVAILABLE")
+
+    await releaseExpiredBookingHolds(client)
+    const taken = await client.query(`
+      SELECT 1 FROM disponibilidad
+      WHERE vendedor_id = $1::uuid AND fecha = $2::date
+        AND hora_inicio >= $3::time
+        AND hora_inicio - $3::time < make_interval(mins => $4)
+        AND franja_ocupada(vendedor_id, fecha, hora_inicio)
       LIMIT 1
-    `, [slotId])
-    if (!slot || activeReservation?.rowCount) throw new Error("SLOT_NOT_AVAILABLE")
+    `, spanValues)
+    if (taken.rowCount) throw new Error("SLOT_NOT_AVAILABLE")
 
     const customerId = await upsertCustomer(client, customer)
-    await client.query("UPDATE disponibilidad SET disponible = FALSE WHERE id::text = $1", [slotId])
 
     const bookingResult = await client.query<{
       id: string
@@ -432,16 +465,17 @@ export async function createBookingWithSession(
     }>(`
       INSERT INTO reservas (
         cliente_id, disponibilidad_id, fecha_hora, estado, monto_reserva, hold_expires_at,
-        requiere_factura_local
+        requiere_factura_local, duracion_minutos, tienda_solicitada
       )
       VALUES (
         $1::uuid, $2::uuid,
         ($3::date + $4::time) AT TIME ZONE 'America/New_York',
-        'pendiente_pago', 20.00, now() + ($5 * interval '1 minute'), $6
+        'pendiente_pago', $7, now() + ($5 * interval '1 minute'), $6, $8, $9
       )
       RETURNING id::text, fecha_hora, estado, monto_reserva::text, hold_expires_at, created_at
     `, [customerId, slotId, slot.date, slot.start_time, bookingHoldMinutes(),
-      Boolean(customer.requiresLocalInvoice)])
+      Boolean(customer.requiresLocalInvoice), bookingPrice(duracionMinutos), duracionMinutos,
+      customer.tienda?.trim() || null])
     const bookingRow = bookingResult.rows[0]
 
     const sessionResult = await client.query<{ id: string }>(`
@@ -452,7 +486,11 @@ export async function createBookingWithSession(
       RETURNING id::text
     `, [bookingRow.id, slot.seller_id, customerId, taxRate(), feeRate()])
 
-    const rewardApplied = await applyPendingReferralReward(
+    // A reward is one complimentary booking worth the 20 USD first hour, so it
+    // covers a one-hour booking outright. A longer booking is paid in full and
+    // the reward kept for the next one, rather than half-spent on a hold that
+    // may still expire unpaid.
+    const rewardApplied = duracionMinutos === DEFAULT_BOOKING_DURATION && await applyPendingReferralReward(
       client,
       customerId,
       bookingRow.id,
@@ -482,6 +520,7 @@ export async function createBookingWithSession(
       hora: displayTime(slot.start_time),
       estado: rewardApplied ? "confirmada" : bookingRow.estado,
       montoReserva: rewardApplied ? 0 : Number(bookingRow.monto_reserva),
+      duracionMinutos,
       holdExpiresAt: new Date(bookingRow.hold_expires_at),
       requiresLocalInvoice: Boolean(customer.requiresLocalInvoice),
       createdAt: new Date(bookingRow.created_at),
@@ -558,20 +597,11 @@ export async function releaseExpiredBookingHolds(
       WHERE estado = 'pendiente_pago'
         AND hold_expires_at <= now()
         AND ($1::text IS NULL OR disponibilidad_id::text = $1)
-      RETURNING disponibilidad_id
-    ), freed AS (
-      UPDATE disponibilidad d
-      SET disponible = true
-      WHERE d.id IN (SELECT disponibilidad_id FROM expired)
-        AND NOT EXISTS (
-          SELECT 1 FROM reservas r
-          WHERE r.disponibilidad_id = d.id
-            AND (r.estado IN ('confirmada', 'completada')
-              OR (r.estado = 'pendiente_pago' AND r.hold_expires_at > now()))
-        )
-      RETURNING d.id
+      RETURNING 1
     )
-    SELECT (SELECT count(*) FROM expired)::int AS released
+    -- The half hours each one covered are freed by the trigger on reservas
+    -- (migration 021), which knows how long each booking was.
+    SELECT count(*)::int AS released FROM expired
   `, [slotId || null])
 
   return released.rows[0]?.released ?? 0
@@ -637,26 +667,12 @@ export async function bookingHoldForSession(sessionId: string): Promise<BookingH
 }
 
 export async function cancelBookingHold(bookingId: string, reason: string): Promise<void> {
-  await transaction(async (client) => {
-    const result = await client.query<{ disponibilidad_id: string }>(`
-      UPDATE reservas
-      SET estado = 'cancelada', cancellation_reason = $2
-      WHERE id::text = $1 AND estado = 'pendiente_pago'
-      RETURNING disponibilidad_id::text
-    `, [bookingId, reason.slice(0, 100)])
-    if (result.rows[0]) {
-      await client.query(`
-        UPDATE disponibilidad d SET disponible = true
-        WHERE d.id = $1::uuid
-          AND NOT EXISTS (
-            SELECT 1 FROM reservas r
-            WHERE r.disponibilidad_id = d.id
-              AND (r.estado IN ('confirmada', 'completada')
-                OR (r.estado = 'pendiente_pago' AND r.hold_expires_at > now()))
-          )
-      `, [result.rows[0].disponibilidad_id])
-    }
-  })
+  // The trigger on reservas frees every half hour the hold covered.
+  await query(`
+    UPDATE reservas
+    SET estado = 'cancelada', cancellation_reason = $2
+    WHERE id::text = $1 AND estado = 'pendiente_pago'
+  `, [bookingId, reason.slice(0, 100)])
 }
 
 export async function processBookingCheckoutEvent(input: {
@@ -715,7 +731,7 @@ export async function processBookingCheckoutEvent(input: {
           )
           SELECT sc.vendedor_id, 'booking_payment_confirmed',
             'Booking payment received',
-            c.nombre || ' paid the $20 booking fee.', r.id
+            c.nombre || ' paid the $' || to_char(r.monto_reserva, 'FM999990.00') || ' booking fee.', r.id
           FROM reservas r
           JOIN sesiones_compra sc ON sc.reserva_id = r.id
           JOIN clientes c ON c.id = r.cliente_id
@@ -731,7 +747,6 @@ export async function processBookingCheckoutEvent(input: {
         UPDATE reservas SET estado = 'cancelada', cancellation_reason = 'checkout_expired'
         WHERE id = $1::uuid
       `, [booking.id])
-      await client.query("UPDATE disponibilidad SET disponible = true WHERE id = $1::uuid", [booking.disponibilidad_id])
       outcome = "released"
     }
 
@@ -1094,6 +1109,8 @@ export async function startSession(sessionId: string): Promise<SesionCompra | nu
   return getSession(sessionId)
 }
 
+// Tax and commission are on the merchandise only. Extra call time is Brash3D's
+// own service, billed at its flat price on top.
 async function recalculateTotals(client: PoolClient, sessionId: string): Promise<void> {
   await client.query(`
     UPDATE sesiones_compra sc SET
@@ -1103,6 +1120,7 @@ async function recalculateTotals(client: PoolClient, sessionId: string): Promise
       total = totals.subtotal
         + round(totals.subtotal * sc.tasa_impuesto, 2)
         + round(totals.subtotal * sc.tasa_comision, 2)
+        + sc.cargo_extension
     FROM (
       SELECT $1::uuid AS session_id,
         COALESCE(sum(precio_unitario * cantidad), 0)::numeric(10,2) AS subtotal
@@ -1193,7 +1211,8 @@ export async function bookingConfirmationContext(
     fecha_hora: Date
     outlet: string | null
   }>(`
-    SELECT sc.id::text AS sesion_id, c.nombre, c.telefono, r.fecha_hora, v.tienda_asignada AS outlet
+    SELECT sc.id::text AS sesion_id, c.nombre, c.telefono, r.fecha_hora,
+      COALESCE(r.tienda_solicitada, v.tienda_asignada) AS outlet
     FROM reservas r
     JOIN sesiones_compra sc ON sc.reserva_id = r.id
     JOIN clientes c ON c.id = r.cliente_id
@@ -1208,7 +1227,75 @@ export async function bookingConfirmationContext(
     nombre: row.nombre,
     telefono: row.telefono,
     fechaHora: new Date(row.fecha_hora),
-    outlet: row.outlet || "Nike Sawgrass",
+    outlet: row.outlet || "-",
+  }
+}
+
+export interface BookingEmailContext {
+  sessionId: string
+  reservaId: string
+  nombre: string
+  email: string
+  telefono: string
+  ciudad: string | null
+  fechaHora: Date
+  duracionMinutos: number
+  montoReserva: number
+  tienda: string | null
+  sellerName: string
+  sellerEmail: string
+}
+
+/**
+ * What the booking confirmation email needs, found from the Stripe checkout
+ * that paid for it or, for a booking a referral reward covered, from its
+ * session. Read after the confirming transaction has committed.
+ */
+export async function bookingEmailContext(
+  where: { checkoutSessionId: string } | { sessionId: string }
+): Promise<BookingEmailContext | null> {
+  const [predicate, value] = "checkoutSessionId" in where
+    ? ["r.checkout_session_id = $1", where.checkoutSessionId]
+    : ["sc.id::text = $1", where.sessionId]
+  const result = await query<{
+    sesion_id: string
+    reserva_id: string
+    nombre: string
+    email: string
+    telefono: string
+    ciudad: string | null
+    fecha_hora: Date
+    duracion_minutos: number
+    monto_reserva: string
+    tienda: string | null
+    seller_name: string
+    seller_email: string
+  }>(`
+    SELECT sc.id::text AS sesion_id, r.id::text AS reserva_id, c.nombre, c.email, c.telefono,
+      c.ciudad, r.fecha_hora, r.duracion_minutos, r.monto_reserva::text,
+      COALESCE(r.tienda_solicitada, v.tienda_asignada) AS tienda,
+      v.nombre AS seller_name, v.email AS seller_email
+    FROM reservas r
+    JOIN sesiones_compra sc ON sc.reserva_id = r.id
+    JOIN clientes c ON c.id = r.cliente_id
+    JOIN vendedores v ON v.id = sc.vendedor_id
+    WHERE ${predicate} AND r.estado IN ('confirmada', 'completada')
+  `, [value])
+  const row = result.rows[0]
+  if (!row) return null
+  return {
+    sessionId: row.sesion_id,
+    reservaId: row.reserva_id,
+    nombre: row.nombre,
+    email: row.email,
+    telefono: row.telefono,
+    ciudad: row.ciudad,
+    fechaHora: new Date(row.fecha_hora),
+    duracionMinutos: row.duracion_minutos,
+    montoReserva: Number(row.monto_reserva),
+    tienda: row.tienda,
+    sellerName: row.seller_name,
+    sellerEmail: row.seller_email,
   }
 }
 
@@ -1271,6 +1358,73 @@ export async function setCommissionRate(
   })
 }
 
+export type ExtendSessionResult =
+  | { status: "extended"; session: SesionCompra }
+  | { status: "not_live" | "after_closing" | "next_slot_taken" }
+
+/**
+ * Adds 30 minutes to a live call, billed on this order's invoice.
+ *
+ * The customer does not book again: the seller presses Extend during the call,
+ * the booking grows by one half hour, and `EXTENSION_PRICE` is added to the
+ * invoice the customer is shown at close. Allowed only when the half hour
+ * straight after the call exists in the opening hours and nobody else holds it
+ * -- one customer at a time. If it is taken, the call ends as booked.
+ *
+ * The next half hour is locked before it is checked, which is the same lock a
+ * booking for it takes, so an extension and a new booking cannot both win it.
+ */
+export async function extendSession(sessionId: string): Promise<ExtendSessionResult> {
+  return transaction(async (client) => {
+    const current = await client.query<{
+      reserva_id: string
+      vendedor_id: string
+      fecha: string
+      hora_inicio: string
+      duracion_minutos: number
+    }>(`
+      SELECT r.id::text AS reserva_id, d.vendedor_id::text, d.fecha::text,
+        d.hora_inicio::text, r.duracion_minutos
+      FROM sesiones_compra sc
+      JOIN reservas r ON r.id = sc.reserva_id
+      JOIN disponibilidad d ON d.id = r.disponibilidad_id
+      WHERE sc.id::text = $1 AND sc.estado = 'en_progreso' AND sc.started_at IS NOT NULL
+      FOR UPDATE OF sc, r
+    `, [sessionId])
+    const booking = current.rows[0]
+    if (!booking) return { status: "not_live" }
+
+    const next = await client.query<{ hora_inicio: string }>(`
+      SELECT hora_inicio::text FROM disponibilidad
+      WHERE vendedor_id = $1::uuid AND fecha = $2::date
+        AND hora_inicio - $3::time = make_interval(mins => $4)
+      FOR UPDATE
+    `, [booking.vendedor_id, booking.fecha, booking.hora_inicio, booking.duracion_minutos])
+    if (!next.rows[0]) return { status: "after_closing" }
+
+    await releaseExpiredBookingHolds(client)
+    const taken = await client.query<{ taken: boolean }>(
+      "SELECT franja_ocupada($1::uuid, $2::date, $3::time, $4::uuid) AS taken",
+      [booking.vendedor_id, booking.fecha, next.rows[0].hora_inicio, booking.reserva_id]
+    )
+    if (taken.rows[0].taken) return { status: "next_slot_taken" }
+
+    await client.query(
+      "UPDATE reservas SET duracion_minutos = duracion_minutos + $2 WHERE id = $1::uuid",
+      [booking.reserva_id, EXTENSION_MINUTES]
+    )
+    await client.query(`
+      UPDATE sesiones_compra
+      SET minutos_extension = minutos_extension + $2, cargo_extension = cargo_extension + $3
+      WHERE id::text = $1
+    `, [sessionId, EXTENSION_MINUTES, EXTENSION_PRICE])
+    await recalculateTotals(client, sessionId)
+    const session = await getSessionWithClient(clientQuery(client), sessionId)
+    if (!session) return { status: "not_live" }
+    return { status: "extended", session }
+  })
+}
+
 // The share charged up front is chosen per order by the seller: some customers
 // pay in full, others 85/15 or 65/35. The commission is confirmed in the same
 // act, because closing is the moment the customer is first shown a total.
@@ -1291,7 +1445,7 @@ export async function closeSession(
     const result = await client.query(`
       UPDATE sesiones_compra
       SET estado = 'completada', fecha_fin = COALESCE(fecha_fin, NOW()), porcentaje_inicial = $2
-      WHERE id::text = $1 AND estado = 'en_progreso' AND started_at IS NOT NULL AND total > 0
+      WHERE id::text = $1 AND estado = 'en_progreso' AND started_at IS NOT NULL AND subtotal > 0
     `, [sessionId, clampPercentage(initialPercentage)])
     if (!result.rowCount) return null
     return getSessionWithClient(clientQuery(client), sessionId)
@@ -1303,19 +1457,26 @@ export async function closeSession(
  *
  * The customer watched the whole call and liked none of it, which is an
  * ordinary outcome at an outlet, not an error. Without this the session has no
- * exit at all: `closeSession` requires `total > 0`, so an empty cart left the
+ * exit at all: `closeSession` requires products, so an empty cart left the
  * appointment in `en_progreso` forever — counted as live work on the seller's
  * Overview, and showing the customer a cart that would never resolve.
  *
- * It is a separate action rather than a branch of closing, because the two
- * outcomes are not interchangeable: one creates an invoice the customer owes
- * money against, the other creates nothing. Guarded on an empty cart so it can
- * never discard an order that has products in it.
+ * Two endings, decided by whether the seller extended the call:
+ *
+ * - No extra time: `cancelada`. No invoice, no payment, no shipment; the
+ *   booking fee already charged is untouched.
+ * - Extra time: closed as an invoice for the extension alone, 100% up front.
+ *   The time was used, and it is charged like the booking fee is -- whether or
+ *   not anything is bought. Nothing ships; see `isExtraTimeOnly`.
+ *
+ * Guarded on an empty cart so it can never discard an order with products.
  */
 export async function cancelSessionWithoutPurchase(sessionId: string): Promise<SesionCompra | null> {
   const result = await query(`
     UPDATE sesiones_compra sc
-    SET estado = 'cancelada', fecha_fin = COALESCE(fecha_fin, NOW())
+    SET estado = CASE WHEN sc.cargo_extension > 0 THEN 'completada' ELSE 'cancelada' END::sesion_estado,
+      porcentaje_inicial = CASE WHEN sc.cargo_extension > 0 THEN 100 ELSE sc.porcentaje_inicial END,
+      fecha_fin = COALESCE(fecha_fin, NOW())
     WHERE sc.id::text = $1 AND sc.estado = 'en_progreso' AND sc.started_at IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM productos_carrito pc WHERE pc.sesion_id = sc.id)
   `, [sessionId])
@@ -1378,6 +1539,8 @@ export async function updateDeliveryStatus(
       WHERE sc.id::text = $1
         AND sc.estado = 'completada'
         AND sc.monto_pagado_inicial > 0
+        -- An invoice for extra call time alone has nothing to ship.
+        AND sc.subtotal > 0
       FOR UPDATE OF sc
     `, [sessionId])
     if (!sessionResult.rows[0]) return null
@@ -1462,6 +1625,7 @@ export async function processSessionCheckoutEvent(input: {
     const result = await client.query<{
       id: string
       total: string
+      subtotal: string
       porcentaje_inicial: string
       seller_id: string
       customer_id: string
@@ -1471,7 +1635,7 @@ export async function processSessionCheckoutEvent(input: {
       already_paid: string
       offline_method: string | null
     }>(`
-      SELECT sc.id::text, sc.total::text, sc.porcentaje_inicial::text,
+      SELECT sc.id::text, sc.total::text, sc.subtotal::text, sc.porcentaje_inicial::text,
         sc.vendedor_id::text AS seller_id,
         sc.cliente_id::text AS customer_id, sc.reserva_id::text AS reserva_id,
         c.nombre AS customer_name, c.referido_por_id::text AS referrer_id,
@@ -1540,7 +1704,9 @@ export async function processSessionCheckoutEvent(input: {
         if (input.stage === "final") {
           await client.query(`UPDATE envios SET estado='entregado', metodo_pago_recibido='stripe', asignacion_pago_final='ingreso_llc_usa', fecha_entrega_real=COALESCE(fecha_entrega_real,now()) WHERE sesion_id=$1::uuid`, [session.id])
         }
-        if (input.stage === "inicial") {
+        // A referral rewards a real purchase. Paying for extra call time alone
+        // is not one, and must not spend the referred customer's first.
+        if (input.stage === "inicial" && Number(session.subtotal) > 0) {
           await grantReferralRewardForInitialPayment(client, session)
         }
         await client.query(`INSERT INTO payment_logs(payment_intent_id,sesion_id,monto,tipo_pago,estado,metadata) VALUES($1,$2::uuid,$3,$4,'succeeded',$5::jsonb)`, [input.paymentIntentId || input.checkoutSessionId, session.id, amount.toFixed(2), input.stage === "inicial" ? "session_inicial" : "session_final", JSON.stringify({ checkoutSessionId: input.checkoutSessionId, eventId: input.eventId })])
@@ -1614,6 +1780,7 @@ async function grantReferralRewardForInitialPayment(
     WHERE cliente_id = $1::uuid
       AND id <> $2::uuid
       AND monto_pagado_inicial > 0
+      AND subtotal > 0
     LIMIT 1
   `, [session.customer_id, session.id])
   if (priorPaidSession.rowCount) return

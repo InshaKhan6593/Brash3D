@@ -28,7 +28,10 @@ import {
   X,
 } from "lucide-react"
 import { BOOKING_FILTERS, BOOKING_FILTER_LABELS, matchesBookingFilter, type BookingFilter } from "@/lib/booking-filters"
+import { bookableStarts, BOOKING_DURATIONS, bookingPrice, type BookingDuration, DEFAULT_BOOKING_DURATION, EXTENSION_MINUTES, EXTENSION_PRICE, formatDuration } from "@/lib/booking-duration"
 import { SchedulePanel } from "@/components/schedule-panel"
+import { BrandWordmark } from "@/components/brand-logo"
+import { isExtraTimeOnly } from "@/lib/order-kind"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -132,6 +135,7 @@ function BookingStage({ session }: { session: SesionCompra }) {
   if (session.bookingEstado === "cancelada") return <Badge variant="destructive">Cancelled</Badge>
   if (session.estado === "cancelada") return <Badge variant="secondary">Ended, no purchase</Badge>
   if (session.bookingEstado === "pendiente_pago") return <Badge variant="outline">Awaiting payment</Badge>
+  if (isExtraTimeOnly(session)) return <Badge variant="secondary">Extra time only</Badge>
   if (session.estado === "completada") return <Badge variant="secondary">Appointment completed</Badge>
   if (session.startedAt) return <Badge>In progress</Badge>
   return <Badge variant="secondary">Scheduled</Badge>
@@ -145,6 +149,10 @@ function OrderStage({ session }: { session: SesionCompra }) {
   // Nothing was bought, so none of the order stages below apply.
   if (session.estado === "cancelada") return <Badge variant="outline">No purchase</Badge>
   if (session.estado === "en_progreso") return <Badge variant="secondary">Building cart</Badge>
+  // Nothing bought but the call was extended: one payment, nothing to ship.
+  if (isExtraTimeOnly(session)) return hasInitialPayment(session)
+    ? <Badge><CheckCircle2 />Extra time paid</Badge>
+    : <Badge variant="outline">Awaiting extra-time payment</Badge>
   if (!hasInitialPayment(session)) return <Badge variant="outline">Awaiting up-front payment</Badge>
   if (!session.envio) return <Badge variant="secondary">Create shipment</Badge>
   if (session.envio.estado === "preparacion") return <Badge variant="secondary">Ready for consolidated box</Badge>
@@ -235,7 +243,7 @@ function OverviewDashboard({ sessions, boxes }: { sessions: SesionCompra[]; boxe
     </div>
 
     <div className="grid gap-6 xl:grid-cols-[1.35fr_1fr]">
-      <Card><CardHeader><CardTitle>Today’s operations</CardTitle><CardDescription>{todayBookings.length ? "Appointments scheduled for today." : "No appointments today. Showing the next scheduled sessions."}</CardDescription></CardHeader><CardContent className="space-y-2">{schedule.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">No upcoming sessions.</p>}{schedule.map((session) => <div key={session.id} className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-center gap-3"><div className="min-w-16 text-center"><p className="text-sm font-semibold">{session.horaProgramada || scheduledTime(session).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</p><p className="text-xs text-muted-foreground">{formatDate(scheduledTime(session))}</p></div><div className="min-w-0"><p className="truncate font-medium">{session.cliente.nombre}</p><p className="truncate text-xs text-muted-foreground">{session.cliente.ciudad || session.cliente.pais} · {session.outlet || "Nike Sawgrass"}</p></div></div><div className="flex items-center justify-between gap-3 sm:justify-end"><SessionStatus session={session} /><RowActions session={session} /></div></div>)}</CardContent></Card>
+      <Card><CardHeader><CardTitle>Today’s operations</CardTitle><CardDescription>{todayBookings.length ? "Appointments scheduled for today." : "No appointments today. Showing the next scheduled sessions."}</CardDescription></CardHeader><CardContent className="space-y-2">{schedule.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">No upcoming sessions.</p>}{schedule.map((session) => <div key={session.id} className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-center gap-3"><div className="min-w-16 text-center"><p className="text-sm font-semibold">{session.horaProgramada || scheduledTime(session).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</p><p className="text-xs text-muted-foreground">{formatDate(scheduledTime(session))}</p></div><div className="min-w-0"><p className="truncate font-medium">{session.cliente.nombre}</p><p className="truncate text-xs text-muted-foreground">{session.cliente.ciudad || session.cliente.pais}{session.outlet ? ` · ${session.outlet}` : ""}</p></div></div><div className="flex items-center justify-between gap-3 sm:justify-end"><SessionStatus session={session} /><RowActions session={session} /></div></div>)}</CardContent></Card>
       <Card><CardHeader><CardTitle>Payment health</CardTitle><CardDescription>Cash position across current orders.</CardDescription></CardHeader><CardContent className="space-y-4"><div className="flex items-center justify-between gap-4"><div><p className="text-sm font-medium">Collected</p><p className="text-xs text-muted-foreground">Up-front and final payments</p></div><p className="font-semibold text-emerald-600 dark:text-emerald-400">{formatCurrency(collected)}</p></div><div className="flex items-center justify-between gap-4"><div><p className="text-sm font-medium">Outstanding</p><p className="text-xs text-muted-foreground">Balances still due</p></div><p className="font-semibold">{formatCurrency(outstanding)}</p></div><div className="flex items-center justify-between gap-4"><div><p className="text-sm font-medium">Booking fees</p><p className="text-xs text-muted-foreground">Confirmed appointments</p></div><p className="font-semibold">{formatCurrency(bookingFeesCollected)}</p></div><div className="flex items-center justify-between gap-4"><div><p className="text-sm font-medium">Invoices closed</p><p className="text-xs text-muted-foreground">Completed shopping sessions</p></div><Badge variant="secondary">{completedCount}</Badge></div></CardContent></Card>
     </div>
 
@@ -535,6 +543,47 @@ function WhatsAppStatusCard({ window, customerName, updatesRequested }: { window
   </Alert>
 }
 
+/**
+ * Thirty more minutes on the call, without the customer booking again. The
+ * server refuses when the next half hour is closed or another customer's, and
+ * the reason is shown here, beside the button.
+ */
+function ExtensionCard({ session, onExtend }: { session: SesionCompra; onExtend: () => Promise<void> }) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const starts = session.fechaHoraProgramada ? new Date(session.fechaHoraProgramada) : null
+  const ends = starts ? new Date(starts.getTime() + session.duracionMinutos * 60_000) : null
+
+  async function extendCall() {
+    setError("")
+    setSaving(true)
+    try {
+      await onExtend()
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Unable to extend the session")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <Card>
+    <CardHeader>
+      <CardTitle className="text-xl">Call time</CardTitle>
+      <CardDescription>
+        {formatDuration(session.duracionMinutos)}{ends ? `, until ${ends.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} Florida time` : ""}.
+        {session.minutosExtension > 0 && ` Includes ${formatDuration(session.minutosExtension)} added (${formatCurrency(session.cargoExtension)} on the invoice).`}
+      </CardDescription>
+    </CardHeader>
+    <CardContent className="space-y-3">
+      <Button type="button" variant="outline" className="w-full" disabled={saving} onClick={() => void extendCall()}>
+        <Plus />{saving ? "Extending…" : `Extend ${EXTENSION_MINUTES} min (+${formatCurrency(EXTENSION_PRICE)})`}
+      </Button>
+      <p className="text-xs text-muted-foreground">Added to this customer&apos;s invoice. Only possible when nobody is booked straight after.</p>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+    </CardContent>
+  </Card>
+}
+
 function CommissionCard({ session, onChange }: { session: SesionCompra; onChange: (commissionPercentage: number) => Promise<void> }) {
   const current = round2(session.tasaComision * 100)
   const [value, setValue] = useState(String(current))
@@ -600,7 +649,7 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
   // Priced off the rate in this dialog, not the one on the session, so the
   // seller sees the invoice the customer is about to be shown.
   const fee = subtotal * (commissionValid ? parsedCommission / 100 : session.tasaComision)
-  const total = subtotal + tax + fee
+  const total = subtotal + tax + fee + session.cargoExtension
 
   const parsed = Number(percentage)
   const valid = isValidPercentage(parsed) && commissionValid
@@ -619,7 +668,7 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
       <DialogHeader className="shrink-0 space-y-1.5 border-b px-6 py-4 text-left"><DialogTitle>Close session and create invoice?</DialogTitle><DialogDescription>This action locks the cart totals and starts the customer’s payment step. Check the invoice and the split before confirming.</DialogDescription></DialogHeader>
 
       <div className="dialog-scroll min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
-      <div className="space-y-3 rounded-lg bg-muted/60 p-4 text-sm"><div className="flex justify-between gap-4"><span>Items</span><span className="font-medium">{session.productos.reduce((sum, product) => sum + product.cantidad, 0)}</span></div><div className="flex justify-between gap-4"><span>Subtotal</span><span>{formatCurrency(subtotal)}</span></div><div className="flex justify-between gap-4"><span>Florida tax ({formatPercent(session.tasaImpuesto)})</span><span>{formatCurrency(tax)}</span></div><div className="flex justify-between gap-4"><span>Brash3D fee ({commissionValid ? `${round2(parsedCommission)}%` : formatPercent(session.tasaComision)})</span><span>{formatCurrency(fee)}</span></div><div className="flex justify-between gap-4 border-t pt-3 text-base font-bold"><span>Total invoice</span><span>{formatCurrency(total)}</span></div></div>
+      <div className="space-y-3 rounded-lg bg-muted/60 p-4 text-sm"><div className="flex justify-between gap-4"><span>Items</span><span className="font-medium">{session.productos.reduce((sum, product) => sum + product.cantidad, 0)}</span></div><div className="flex justify-between gap-4"><span>Subtotal</span><span>{formatCurrency(subtotal)}</span></div><div className="flex justify-between gap-4"><span>Florida tax ({formatPercent(session.tasaImpuesto)})</span><span>{formatCurrency(tax)}</span></div><div className="flex justify-between gap-4"><span>Brash3D fee ({commissionValid ? `${round2(parsedCommission)}%` : formatPercent(session.tasaComision)})</span><span>{formatCurrency(fee)}</span></div>{session.cargoExtension > 0 && <div className="flex justify-between gap-4"><span>Extra time ({formatDuration(session.minutosExtension)})</span><span>{formatCurrency(session.cargoExtension)}</span></div>}<div className="flex justify-between gap-4 border-t pt-3 text-base font-bold"><span>Total invoice</span><span>{formatCurrency(total)}</span></div></div>
 
       {/*
         Confirmed here rather than only in the panel, because closing is the
@@ -681,7 +730,7 @@ function CloseSessionDialog({ session, open, onOpenChange, onConfirm, isActive }
  * customer looking at a cart that would never resolve. Liking nothing at an
  * outlet is an ordinary outcome, not a failure state.
  */
-function EndWithoutPurchaseDialog({ customerName, onConfirm }: { customerName: string; onConfirm: () => Promise<void> }) {
+function EndWithoutPurchaseDialog({ customerName, extraTimeCharge, onConfirm }: { customerName: string; extraTimeCharge: number; onConfirm: () => Promise<void> }) {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
@@ -704,7 +753,9 @@ function EndWithoutPurchaseDialog({ customerName, onConfirm }: { customerName: s
     <DialogContent className="sm:max-w-md">
       <DialogHeader>
         <DialogTitle>End this session without a purchase?</DialogTitle>
-        <DialogDescription>{customerName} bought nothing, so no invoice is created and there is nothing further to pay. The 20 USD booking fee already charged is not affected. This cannot be undone.</DialogDescription>
+        <DialogDescription>{extraTimeCharge > 0
+          ? `${customerName} bought nothing, but the call was extended, so the extra time is still charged: an invoice for ${formatCurrency(extraTimeCharge)} is created for the customer to pay from their order page. Nothing ships. The booking fee already charged is not affected. This cannot be undone.`
+          : `${customerName} bought nothing, so no invoice is created and there is nothing further to pay. The booking fee already charged is not affected. This cannot be undone.`}</DialogDescription>
       </DialogHeader>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <DialogFooter className="gap-2">
@@ -736,7 +787,7 @@ function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewH
   const [creatingShipment, setCreatingShipment] = useState(false)
   // Paid, and no shipment yet. The same gate the panel button uses, so the two
   // cannot disagree about when this is allowed.
-  const canCreateShipment = session.estado === "completada" && hasInitialPayment(session) && !session.envio
+  const canCreateShipment = session.estado === "completada" && hasInitialPayment(session) && !session.envio && !isExtraTimeOnly(session)
 
   /**
    * Creates the individual shipment from the row and shows its code.
@@ -821,7 +872,7 @@ function RowActions({ session, onViewHistory }: { session: SesionCompra; onViewH
 }
 
 export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
-  const { session, loading, error, addProduct, updateQuantity, removeProduct, close, cancelWithoutPurchase, setCommission, reopenForCorrection, start, updateDeliveryStatus, whatsappNumber, whatsappWindow } = useSession(sessionId)
+  const { session, loading, error, addProduct, updateQuantity, removeProduct, close, cancelWithoutPurchase, setCommission, extend, reopenForCorrection, start, updateDeliveryStatus, whatsappNumber, whatsappWindow } = useSession(sessionId)
   const [sessions, setSessions] = useState<SesionCompra[]>([])
   const [notifications, setNotifications] = useState<StaffNotification[]>([])
   /**
@@ -866,6 +917,7 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
   const [bookingOpen, setBookingOpen] = useState(false)
   const [bookingDate, setBookingDate] = useState("")
   const [selectedSellerSlotId, setSelectedSellerSlotId] = useState("")
+  const [sellerBookingDuration, setSellerBookingDuration] = useState<BookingDuration>(DEFAULT_BOOKING_DURATION)
   const [bookingError, setBookingError] = useState("")
   const [bookingSaving, setBookingSaving] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
@@ -970,6 +1022,7 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
   const bookingDates = [...new Set(slots.map((slot) => slot.date))]
   const activeBookingDate = bookingDate || bookingDates[0] || ""
   const bookingSlots = slots.filter((slot) => slot.date === activeBookingDate)
+  const sellerStartable = bookableStarts(bookingSlots, sellerBookingDuration)
   const filteredBookings = useMemo(() => {
     const now = new Date()
     const search = bookingSearch.trim().toLowerCase()
@@ -1125,7 +1178,7 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
 
   async function submitSellerBooking(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedSellerSlotId) {
+    if (!selectedSellerSlotId || !sellerStartable.has(selectedSellerSlotId)) {
       setBookingError("Select an available appointment time")
       return
     }
@@ -1137,12 +1190,18 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
       const response = await fetch("/api/bookings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nombre: form.get("nombre"), email: form.get("email"), telefono: form.get("telefono"), ciudad: form.get("ciudad"), slotId: selectedSellerSlotId }),
+        body: JSON.stringify({ nombre: form.get("nombre"), email: form.get("email"), telefono: form.get("telefono"), ciudad: form.get("ciudad"), tienda: form.get("tienda"), slotId: selectedSellerSlotId, duracionMinutos: sellerBookingDuration }),
       })
       const data = (await response.json()) as { session?: SesionCompra; error?: string }
       if (!response.ok || !data.session) throw new Error(data.error || "Unable to create booking")
       setSessions((current) => [data.session!, ...current])
-      setSlots((current) => current.map((slot) => slot.id === selectedSellerSlotId ? { ...slot, available: false } : slot))
+      // Every half hour the booking spans, not only its first.
+      const start = new Date(slots.find((slot) => slot.id === selectedSellerSlotId)!.startsAt).getTime()
+      const end = start + sellerBookingDuration * 60_000
+      setSlots((current) => current.map((slot) => {
+        const at = new Date(slot.startsAt).getTime()
+        return slot.sellerId === data.session!.vendedorId && at >= start && at < end ? { ...slot, available: false } : slot
+      }))
       setBookingOpen(false)
       setBookingDate("")
       setSelectedSellerSlotId("")
@@ -1165,13 +1224,20 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
             <div className="space-y-2"><Label htmlFor="seller-email">Email</Label><Input id="seller-email" name="email" type="email" required /></div>
             <div className="space-y-2"><Label htmlFor="seller-phone">WhatsApp number</Label><Input id="seller-phone" name="telefono" required /></div>
             <div className="space-y-2"><Label htmlFor="seller-city">City</Label><Input id="seller-city" name="ciudad" required /></div>
+            <div className="space-y-2 sm:col-span-2"><Label htmlFor="seller-store">Store or outlet to visit</Label><Input id="seller-store" name="tienda" required minLength={2} maxLength={200} placeholder="E.g. Nike at Sawgrass Mills" /></div>
           </div>
           <div className="space-y-2"><Label htmlFor="seller-date">Date</Label><Input id="seller-date" type="date" min={bookingDates[0]} max={bookingDates[bookingDates.length - 1]} value={activeBookingDate} onChange={(event) => { setBookingDate(event.target.value); setSelectedSellerSlotId("") }} /></div>
           <fieldset className="space-y-2">
-            <legend className="text-sm font-medium">One-hour appointment</legend>
+            <legend className="text-sm font-medium">Length</legend>
+            <div className="grid grid-cols-3 gap-2">
+              {BOOKING_DURATIONS.map((minutes) => <Button key={minutes} type="button" variant={sellerBookingDuration === minutes ? "default" : "outline"} onClick={() => setSellerBookingDuration(minutes)}>{formatDuration(minutes)} · ${bookingPrice(minutes)}</Button>)}
+            </div>
+          </fieldset>
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">Start time (Florida)</legend>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               {bookingSlots.map((slot) => (
-                <Button key={slot.id} type="button" variant={selectedSellerSlotId === slot.id ? "default" : "outline"} className="h-12 flex-col gap-0 leading-tight" disabled={!slot.available} onClick={() => setSelectedSellerSlotId(slot.id)}><span>{slot.time}</span><span className="text-[10px] font-normal opacity-70">{slot.available ? "Available" : "Booked"}</span></Button>
+                <Button key={slot.id} type="button" variant={selectedSellerSlotId === slot.id && sellerStartable.has(slot.id) ? "default" : "outline"} className="h-12 flex-col gap-0 leading-tight" disabled={!sellerStartable.has(slot.id)} onClick={() => setSelectedSellerSlotId(slot.id)}><span>{slot.time}</span><span className="text-[10px] font-normal opacity-70">{!slot.available ? "Booked" : sellerStartable.has(slot.id) ? "Available" : "Too short"}</span></Button>
               ))}
             </div>
           </fieldset>
@@ -1289,18 +1355,18 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
       <SidebarProvider>
         <SellerSidebar active="sessions" isAdmin={isAdmin} />
         <SidebarInset className="w-0 min-w-0">
-          <header className="flex flex-wrap items-center justify-between gap-3 border-b bg-background px-4 py-4 lg:px-8"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger /><div className="min-w-0"><Button asChild variant="link" className="h-auto p-0 text-muted-foreground"><Link href="/seller">Seller dashboard</Link></Button><h1 className="truncate text-xl font-bold">{session.cliente.nombre}</h1></div></div><div className="flex flex-wrap items-center gap-2 sm:justify-end">{session.requiresLocalInvoice && <Badge variant="outline"><FileText />Local invoice requested</Badge>}<span className="font-mono font-semibold"><Clock className="mr-1 inline size-4" />{isActive ? `${minutes}:${seconds}` : "Not started"}</span>{session.envio && <Badge variant="outline" aria-label={`Shipment status: ${shipmentStatusLabel(session.envio.estado)}`}>Shipment: {shipmentStatusLabel(session.envio.estado)}</Badge>}<ModeToggle /><Button variant="outline" size="sm" onClick={() => void copyCustomerLink()}><Copy />Copy customer link</Button></div></header>
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b bg-background px-4 py-4 lg:px-8"><div className="flex min-w-0 items-center gap-3"><SidebarTrigger /><div className="min-w-0"><Button asChild variant="link" className="h-auto p-0 text-muted-foreground"><Link href="/seller">Seller dashboard</Link></Button><h1 className="truncate text-xl font-bold">{session.cliente.nombre}</h1></div></div><div className="flex flex-wrap items-center gap-2 sm:justify-end">{session.requiresLocalInvoice && <Badge variant="outline"><FileText />Local invoice requested</Badge>}<span className="font-mono font-semibold"><Clock className="mr-1 inline size-4" />{isActive ? `${minutes}:${seconds}` : session.estado === "en_progreso" ? "Not started" : "Ended"}</span>{session.envio && <Badge variant="outline" aria-label={`Shipment status: ${shipmentStatusLabel(session.envio.estado)}`}>Shipment: {shipmentStatusLabel(session.envio.estado)}</Badge>}<ModeToggle /><Button variant="outline" size="sm" onClick={() => void copyCustomerLink()}><Copy />Copy customer link</Button></div></header>
           <CopyToast state={panelToast} onDismiss={() => setPanelToast(null)} />
           <div className="grid gap-6 p-4 lg:grid-cols-[minmax(0,1fr)_340px] lg:p-8">
             <div className="min-w-0 space-y-6">
-              {isWaiting && <Card><CardHeader><CardTitle>Session waiting to start</CardTitle><CardDescription>{scheduledAt.toLocaleString(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })} · {session.outlet}</CardDescription></CardHeader><CardContent className="space-y-3"><Button className="w-full" size="lg" disabled={!canStart} onClick={() => void beginSession()}><WhatsAppIcon />Start live session</Button>{!canStart && <p className="text-center text-xs text-muted-foreground">The booking payment must be confirmed before this session can start.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}
+              {isWaiting && <Card><CardHeader><CardTitle>Session waiting to start</CardTitle><CardDescription>{scheduledAt.toLocaleString(undefined, { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" })}{session.outlet ? ` · ${session.outlet}` : ""}</CardDescription></CardHeader><CardContent className="space-y-3"><Button className="w-full" size="lg" disabled={!canStart} onClick={() => void beginSession()}><WhatsAppIcon />Start live session</Button>{!canStart && <p className="text-center text-xs text-muted-foreground">The booking payment must be confirmed before this session can start.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}
               {isActive && <Card><CardHeader><CardTitle className="text-xl">Add product</CardTitle><CardDescription>Name, price, quantity. Cart changes sync to the customer screen as you go.</CardDescription></CardHeader><CardContent><form onSubmit={submitProduct} className="grid gap-3 sm:grid-cols-3"><div className="space-y-2 sm:col-span-3"><Label htmlFor="product-name">Product name</Label><Input id="product-name" name="nombre" autoComplete="off" enterKeyHint="next" required /></div><div className="space-y-2 sm:col-span-2"><Label htmlFor="product-price">Price USD</Label><Input id="product-price" name="precio" type="number" inputMode="decimal" min="0.01" step="0.01" enterKeyHint="done" required /></div><div className="space-y-2"><Label htmlFor="product-quantity">Quantity</Label><Input id="product-quantity" name="cantidad" type="number" inputMode="numeric" min="1" defaultValue="1" /></div>{actionError && <p className="text-sm text-destructive sm:col-span-3">{actionError}</p>}<Button className="sm:col-span-3"><Plus />Add to cart</Button></form></CardContent></Card>}
               {session.estado === "cancelada" ? <Card><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><X className="size-5" />Session ended without a purchase</CardTitle><CardDescription>{session.cliente.nombre} bought nothing during this session, so no invoice was created and there is nothing to ship or collect. The booking fee already charged is unaffected.</CardDescription></CardHeader></Card> : session.estado === "completada" ? <ReadOnlyOrderDetails session={session} isAdmin={isAdmin} onReopen={reopenClosedSession} /> : <Card><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><ShoppingCart />Cart ({session.productos.length})</CardTitle></CardHeader><CardContent className="space-y-3">{session.productos.length === 0 && <p className="py-8 text-center text-muted-foreground">No products yet.</p>}{/* Two lines rather than one: name, three buttons, a fixed-width total and
                   a delete button in a single row are wider than a phone, and this is the
                   screen the seller uses one-handed at the outlet. */}
               {session.productos.map((product) => <div key={product.id} className="rounded-md bg-muted p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate font-medium">{product.nombre}</p>{(product.sku || product.notas) && <p className="truncate text-xs text-muted-foreground">{[product.sku, product.notas].filter(Boolean).join(" · ")}</p>}</div><strong className="shrink-0 tabular-nums">{formatCurrency(product.precio * product.cantidad)}</strong></div><div className="mt-2 flex items-center gap-2"><Button size="icon" variant="outline" aria-label={`Decrease ${product.nombre}`} onClick={() => void updateQuantity(product.id, -1)}><Minus /></Button><span className="w-8 text-center tabular-nums">{product.cantidad}</span><Button size="icon" variant="outline" aria-label={`Increase ${product.nombre}`} onClick={() => void updateQuantity(product.id, 1)}><Plus /></Button><span className="min-w-0 truncate text-xs text-muted-foreground">{formatCurrency(product.precio)} each</span><Button size="icon" variant="ghost" className="ml-auto shrink-0" aria-label={`Remove ${product.nombre}`} onClick={() => void removeProduct(product.id)}><Trash2 /></Button></div></div>)}</CardContent></Card>}
             </div>
-            <aside className="min-w-0 space-y-6">{isActive && whatsappNumber && whatsappWindow && <WhatsAppStatusCard window={whatsappWindow} customerName={session.cliente.nombre} updatesRequested={session.whatsappUpdates} />}{session.estado === "en_progreso" && <CommissionCard session={session} onChange={updateCommission} />}{session.estado !== "cancelada" && <Card><CardHeader><CardTitle className="text-xl">Order summary</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(session.subtotal)}</span></div><div className="flex justify-between"><span>Tax {formatPercent(session.tasaImpuesto)}</span><span>{formatCurrency(session.impuesto)}</span></div><div className="flex justify-between"><span>Fee {formatPercent(session.tasaComision)}</span><span>{formatCurrency(session.comision)}</span></div><div className="flex justify-between pt-3 text-lg font-bold"><span>Total</span><span>{formatCurrency(session.total)}</span></div></CardContent></Card>}{session.estado === "completada" && <Card><CardHeader><CardTitle className="text-xl">Customer delivery</CardTitle><CardDescription>{session.envio ? `Current status: ${shipmentStatusLabel(session.envio.estado)}` : "Create the shipment after the customer's up-front payment is confirmed."}</CardDescription></CardHeader><CardContent className="space-y-3">{session.deliveryAddress && <div className="rounded-md bg-muted p-3 text-sm"><p className="font-medium">Confirmed delivery address</p><p className="mt-1 text-muted-foreground">{session.deliveryAddress}</p><p className="text-muted-foreground">{session.deliveryCity}, {session.cliente.pais}</p></div>}{session.envio?.labelCode && <div className="rounded-md border p-3 text-sm"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><div className="min-w-0"><p className="text-xs text-muted-foreground">Customer shipment code</p><p className="mt-1 break-all font-mono font-semibold">{session.envio.labelCode}</p></div><Button type="button" size="sm" variant="outline" className="min-w-24 shrink-0 justify-center" onClick={() => void copyShipmentCode()}><Copy />{shipmentCodeCopied ? "Copied" : "Copy code"}</Button></div></div>}{nextDeliveryStep && hasInitialPayment(session) && <Button className="w-full" disabled={!session.deliveryAddress || !session.deliveryCity} onClick={() => void createShipment()}><Package />{nextDeliveryStep.label}</Button>}{!nextDeliveryStep && session.envio?.estado === "entregado" && <Badge><CheckCircle2 />Delivery confirmed</Badge>}{session.envio && session.envio.estado !== "entregado" && <p className="text-xs text-muted-foreground">USA operations handles consolidation. The local team owns receipt, final payment, and delivery confirmation.</p>}{!hasInitialPayment(session) && <p className="text-xs text-muted-foreground">Waiting for the customer to confirm their address and pay the up-front amount.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}<CloseSessionDialog session={session} open={closeDialogOpen} onOpenChange={setCloseDialogOpen} onConfirm={confirmCloseSession} isActive={isActive} />{isActive && session.productos.length === 0 && <EndWithoutPurchaseDialog customerName={session.cliente.nombre} onConfirm={endWithoutPurchase} />}</aside>
+            <aside className="min-w-0 space-y-6">{isActive && whatsappNumber && whatsappWindow && <WhatsAppStatusCard window={whatsappWindow} customerName={session.cliente.nombre} updatesRequested={session.whatsappUpdates} />}{isActive && <ExtensionCard session={session} onExtend={extend} />}{session.estado === "en_progreso" && <CommissionCard session={session} onChange={updateCommission} />}{session.estado !== "cancelada" && <Card><CardHeader><CardTitle className="text-xl">Order summary</CardTitle></CardHeader><CardContent className="space-y-2 text-sm"><div className="flex justify-between"><span>Subtotal</span><span>{formatCurrency(session.subtotal)}</span></div><div className="flex justify-between"><span>Tax {formatPercent(session.tasaImpuesto)}</span><span>{formatCurrency(session.impuesto)}</span></div><div className="flex justify-between"><span>Fee {formatPercent(session.tasaComision)}</span><span>{formatCurrency(session.comision)}</span></div>{session.cargoExtension > 0 && <div className="flex justify-between"><span>Extra time {formatDuration(session.minutosExtension)}</span><span>{formatCurrency(session.cargoExtension)}</span></div>}<div className="flex justify-between pt-3 text-lg font-bold"><span>Total</span><span>{formatCurrency(session.total)}</span></div></CardContent></Card>}{isExtraTimeOnly(session) && <Card><CardHeader><CardTitle className="text-xl">Extra time only</CardTitle><CardDescription>Nothing was bought, so nothing ships. The customer pays {formatCurrency(session.total)} for {formatDuration(session.minutosExtension)} of extra call time from their order page.</CardDescription></CardHeader><CardContent>{hasInitialPayment(session) ? <Badge><CheckCircle2 />Paid</Badge> : <Badge variant="outline">Awaiting payment</Badge>}</CardContent></Card>}{session.estado === "completada" && !isExtraTimeOnly(session) && <Card><CardHeader><CardTitle className="text-xl">Customer delivery</CardTitle><CardDescription>{session.envio ? `Current status: ${shipmentStatusLabel(session.envio.estado)}` : "Create the shipment after the customer's up-front payment is confirmed."}</CardDescription></CardHeader><CardContent className="space-y-3">{session.deliveryAddress && <div className="rounded-md bg-muted p-3 text-sm"><p className="font-medium">Confirmed delivery address</p><p className="mt-1 text-muted-foreground">{session.deliveryAddress}</p><p className="text-muted-foreground">{session.deliveryCity}, {session.cliente.pais}</p></div>}{session.envio?.labelCode && <div className="rounded-md border p-3 text-sm"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><div className="min-w-0"><p className="text-xs text-muted-foreground">Customer shipment code</p><p className="mt-1 break-all font-mono font-semibold">{session.envio.labelCode}</p></div><Button type="button" size="sm" variant="outline" className="min-w-24 shrink-0 justify-center" onClick={() => void copyShipmentCode()}><Copy />{shipmentCodeCopied ? "Copied" : "Copy code"}</Button></div></div>}{nextDeliveryStep && hasInitialPayment(session) && <Button className="w-full" disabled={!session.deliveryAddress || !session.deliveryCity} onClick={() => void createShipment()}><Package />{nextDeliveryStep.label}</Button>}{!nextDeliveryStep && session.envio?.estado === "entregado" && <Badge><CheckCircle2 />Delivery confirmed</Badge>}{session.envio && session.envio.estado !== "entregado" && <p className="text-xs text-muted-foreground">USA operations handles consolidation. The local team owns receipt, final payment, and delivery confirmation.</p>}{!hasInitialPayment(session) && <p className="text-xs text-muted-foreground">Waiting for the customer to confirm their address and pay the up-front amount.</p>}{actionError && <p className="text-sm text-destructive">{actionError}</p>}</CardContent></Card>}<CloseSessionDialog session={session} open={closeDialogOpen} onOpenChange={setCloseDialogOpen} onConfirm={confirmCloseSession} isActive={isActive} />{isActive && session.productos.length === 0 && <EndWithoutPurchaseDialog customerName={session.cliente.nombre} extraTimeCharge={session.cargoExtension} onConfirm={endWithoutPurchase} />}</aside>
           </div>
         </SidebarInset>
       </SidebarProvider>
@@ -1375,7 +1441,7 @@ export function SellerPanel({ sessionId, tab, isAdmin }: SellerPanelProps) {
               overlap on purpose -- a booking later today is both Open and
               Today -- and nothing said so, which made the difference look
               like a bug. */}
-          <p className="text-xs text-muted-foreground">{BOOKING_FILTER_LABELS[bookingFilter].hint}</p><div className="grid gap-2 sm:grid-cols-[1fr_190px_auto]"><Input aria-label="Search bookings" placeholder="Search name, phone, or email" value={bookingSearch} onChange={(event) => { setBookingSearch(event.target.value); setPage(1) }} /><Input aria-label="Filter bookings by date" type="date" value={bookingFilterDate} onChange={(event) => { setBookingFilterDate(event.target.value); setPage(1) }} /><Button variant="ghost" disabled={!bookingSearch && !bookingFilterDate} onClick={() => { setBookingSearch(""); setBookingFilterDate(""); setPage(1) }}>Clear</Button></div><p className="text-xs text-muted-foreground">{filteredBookings.length} matching booking{filteredBookings.length === 1 ? "" : "s"} · nearest upcoming first</p></div><MobileRows empty={paginated.length === 0 ? "No bookings match this filter." : undefined}>{(paginated as SesionCompra[]).map((item) => <MobileRow key={item.id} actions={<RowActions session={item} />}><div className="flex min-w-0 items-center gap-2"><p className="truncate font-medium">{item.cliente.nombre}</p>{item.id === nextBookingId && <Badge variant="outline" className="shrink-0">Next</Badge>}</div><p className="text-sm text-muted-foreground">{item.horaProgramada || "—"} · {item.fechaProgramada ? formatDate(item.fechaProgramada) : "—"}</p><p className="text-xs text-muted-foreground">{item.cliente.telefono}</p><div className="flex flex-wrap gap-1.5 pt-1">{item.bookingEstado === "confirmada" || item.bookingEstado === "completada" ? <Badge><CheckCircle2 />{item.bookingFee > 0 ? "$20 paid" : "Referral reward"}</Badge> : <Badge variant="outline">Fee pending</Badge>}<BookingStage session={item} /></div></MobileRow>)}</MobileRows><DesktopTable><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>Appointment</TableHead><TableHead>Booking fee</TableHead><TableHead>Status</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell><div className="flex items-center gap-2"><p className="font-medium">{item.cliente.nombre}</p>{item.id === nextBookingId && <Badge variant="outline">Next</Badge>}</div><p className="text-xs text-muted-foreground">{item.cliente.telefono}</p></TableCell><TableCell className="whitespace-nowrap"><p className="font-medium">{item.horaProgramada || "—"}</p><p className="text-xs text-muted-foreground">{item.fechaProgramada ? formatDate(item.fechaProgramada) : "—"}</p></TableCell><TableCell>{item.bookingEstado === "confirmada" || item.bookingEstado === "completada" ? <Badge><CheckCircle2 />{item.bookingFee > 0 ? "$20 paid" : "Referral reward"}</Badge> : <Badge variant="outline">Pending</Badge>}</TableCell><TableCell><BookingStage session={item} /></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table></DesktopTable><TablePagination page={page} total={filteredBookings.length} onChange={setPage} /></TableCard>}
+          <p className="text-xs text-muted-foreground">{BOOKING_FILTER_LABELS[bookingFilter].hint}</p><div className="grid gap-2 sm:grid-cols-[1fr_190px_auto]"><Input aria-label="Search bookings" placeholder="Search name, phone, or email" value={bookingSearch} onChange={(event) => { setBookingSearch(event.target.value); setPage(1) }} /><Input aria-label="Filter bookings by date" type="date" value={bookingFilterDate} onChange={(event) => { setBookingFilterDate(event.target.value); setPage(1) }} /><Button variant="ghost" disabled={!bookingSearch && !bookingFilterDate} onClick={() => { setBookingSearch(""); setBookingFilterDate(""); setPage(1) }}>Clear</Button></div><p className="text-xs text-muted-foreground">{filteredBookings.length} matching booking{filteredBookings.length === 1 ? "" : "s"} · nearest upcoming first</p></div><MobileRows empty={paginated.length === 0 ? "No bookings match this filter." : undefined}>{(paginated as SesionCompra[]).map((item) => <MobileRow key={item.id} actions={<RowActions session={item} />}><div className="flex min-w-0 items-center gap-2"><p className="truncate font-medium">{item.cliente.nombre}</p>{item.id === nextBookingId && <Badge variant="outline" className="shrink-0">Next</Badge>}</div><p className="text-sm text-muted-foreground">{item.horaProgramada || "—"} · {item.fechaProgramada ? formatDate(item.fechaProgramada) : "—"}</p><p className="text-xs text-muted-foreground">{item.cliente.telefono}</p><div className="flex flex-wrap gap-1.5 pt-1">{item.bookingEstado === "confirmada" || item.bookingEstado === "completada" ? <Badge><CheckCircle2 />{item.bookingFee > 0 ? `${formatCurrency(item.bookingFee)} paid` : "Referral reward"}</Badge> : <Badge variant="outline">Fee pending</Badge>}<BookingStage session={item} /></div></MobileRow>)}</MobileRows><DesktopTable><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>Appointment</TableHead><TableHead>Booking fee</TableHead><TableHead>Status</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell><div className="flex items-center gap-2"><p className="font-medium">{item.cliente.nombre}</p>{item.id === nextBookingId && <Badge variant="outline">Next</Badge>}</div><p className="text-xs text-muted-foreground">{item.cliente.telefono}</p></TableCell><TableCell className="whitespace-nowrap"><p className="font-medium">{item.horaProgramada || "—"}</p><p className="text-xs text-muted-foreground">{item.fechaProgramada ? formatDate(item.fechaProgramada) : "—"}</p></TableCell><TableCell>{item.bookingEstado === "confirmada" || item.bookingEstado === "completada" ? <Badge><CheckCircle2 />{item.bookingFee > 0 ? `${formatCurrency(item.bookingFee)} paid` : "Referral reward"}</Badge> : <Badge variant="outline">Pending</Badge>}</TableCell><TableCell><BookingStage session={item} /></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table></DesktopTable><TablePagination page={page} total={filteredBookings.length} onChange={setPage} /></TableCard>}
           {activeTab === "customers" && <TableCard title="Customers" description="Customers with a booking or shopping session."><MobileRows empty={paginated.length === 0 ? "No customers yet." : undefined}>{(paginated as SesionCompra[]).map((item) => <MobileRow key={item.clienteId} actions={<RowActions session={item} onViewHistory={openCustomerHistory} />}><div className="flex items-baseline justify-between gap-3"><p className="truncate font-medium">{item.cliente.nombre}</p><p className="shrink-0 font-semibold">{formatCurrency(item.total)}</p></div><p className="truncate text-xs text-muted-foreground">{item.cliente.email}</p><p className="text-sm text-muted-foreground">{item.cliente.telefono} · {item.cliente.ciudad || item.cliente.pais}</p><p className="text-xs text-muted-foreground">Last activity {formatDateTime(item.fechaInicio)}</p></MobileRow>)}</MobileRows><DesktopTable><Table><TableHeader><TableRow><TableHead>Customer</TableHead><TableHead>WhatsApp</TableHead><TableHead>City</TableHead><TableHead>Last activity</TableHead><TableHead className="text-right">Latest order</TableHead><TableHead className="w-16 text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.clienteId}><TableCell><p className="font-medium">{item.cliente.nombre}</p><p className="text-xs text-muted-foreground">{item.cliente.email}</p></TableCell><TableCell>{item.cliente.telefono}</TableCell><TableCell>{item.cliente.ciudad || item.cliente.pais}</TableCell><TableCell>{formatDateTime(item.fechaInicio)}</TableCell><TableCell className="text-right font-medium">{formatCurrency(item.total)}</TableCell><TableCell className="text-right"><RowActions session={item} onViewHistory={openCustomerHistory} /></TableCell></TableRow>)}</TableBody></Table></DesktopTable><TablePagination page={page} total={customers.length} onChange={setPage} /></TableCard>}
           {activeTab === "sessions" && <TableCard title="Shopping sessions" description="Customer sessions and shipment progress."><div className="border-b px-4 py-4"><Input aria-label="Search sessions" placeholder="Search customer, session ID, or shipment code" value={sessionSearch} onChange={(event) => { setSessionSearch(event.target.value); setPage(1) }} /></div><p className="border-b px-4 py-3 text-xs text-muted-foreground">{filteredSessions.length} matching session{filteredSessions.length === 1 ? "" : "s"}</p><MobileRows empty={paginated.length === 0 ? "No sessions match this search." : undefined}>{(paginated as SesionCompra[]).map((item) => <MobileRow key={item.id} actions={<RowActions session={item} />}><p className="truncate font-medium">{item.cliente.nombre}</p><p className="text-xs text-muted-foreground"><span className="font-mono" title={item.id}>{item.id.slice(-8).toUpperCase()}</span> · {formatDateTime(item.fechaHoraProgramada || item.fechaInicio)}</p><p className="truncate text-xs text-muted-foreground">{item.vendedor.nombre} · {item.vendedor.tiendaAsignada || "Assigned seller"}</p><div className="flex flex-wrap items-center gap-2 pt-1"><OrderStage session={item} />{item.envio?.labelCode && <span className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={item.envio.labelCode}>{item.envio.labelCode}</span>}</div></MobileRow>)}</MobileRows><DesktopTable><Table className="!w-full !table-fixed [&_th]:!py-2 [&_td]:!py-2"><TableHeader><TableRow><TableHead className="w-[13%]">Session ID</TableHead><TableHead className="w-[14%]">Date</TableHead><TableHead className="w-[21%]">Customer</TableHead><TableHead className="w-[20%]">Assignment</TableHead><TableHead className="w-[20%]">Order stage</TableHead><TableHead className="w-[24%]">Shipment code</TableHead><TableHead className="w-[8%] text-right">Actions</TableHead></TableRow></TableHeader><TableBody>{(paginated as SesionCompra[]).map((item) => <TableRow key={item.id}><TableCell title={item.id} className="font-mono text-xs">{item.id.slice(-8).toUpperCase()}</TableCell><TableCell className="whitespace-nowrap text-xs">{formatDateTime(item.fechaHoraProgramada || item.fechaInicio)}</TableCell><TableCell>{item.cliente.nombre}</TableCell><TableCell><p className="text-sm font-medium">{item.vendedor.nombre}</p><p className="text-xs text-muted-foreground">{item.vendedor.tiendaAsignada || "Assigned seller"}</p></TableCell><TableCell className="whitespace-nowrap"><OrderStage session={item} /></TableCell><TableCell title={item.envio?.labelCode || "—"} className="max-w-48 font-mono text-xs"><span className="block truncate">{item.envio?.labelCode || "—"}</span></TableCell><TableCell className="text-right"><RowActions session={item} /></TableCell></TableRow>)}</TableBody></Table></DesktopTable><TablePagination page={page} total={filteredSessions.length} onChange={setPage} /></TableCard>}
           </>}
@@ -1406,7 +1472,7 @@ function SellerSidebar({ active, isAdmin }: { active: DashboardTab; isAdmin: boo
   return (
     <Sidebar collapsible="offcanvas" variant="inset">
       <SidebarHeader>
-        <SidebarMenu><SidebarMenuItem><SidebarMenuButton size="lg" asChild><Link href="/seller"><span className="flex size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sm font-bold text-sidebar-primary-foreground">B3D</span><span><span className="block font-semibold">Brash3D</span><span className="block text-xs text-muted-foreground">Seller operations</span></span></Link></SidebarMenuButton></SidebarMenuItem></SidebarMenu>
+        <SidebarMenu><SidebarMenuItem><SidebarMenuButton size="lg" asChild className="h-auto flex-col items-start gap-1 py-2"><Link href="/seller" aria-label="Brash3D Seller operations"><BrandWordmark height={26} /><span className="block text-xs text-muted-foreground">Seller operations</span></Link></SidebarMenuButton></SidebarMenuItem></SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup><SidebarGroupContent><SidebarMenu>

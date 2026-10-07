@@ -293,8 +293,12 @@ async function main() {
  */
 async function createBooking(client, index) {
   const { slots } = await api("/api/slots")
-  const slot = slots.find((candidate) => candidate.available)
-  if (!slot) throw new Error("no available slot to book a fixture against")
+  // Slots are half hours and a booking is an hour, so the start needs the half
+  // hour after it free too (migration 021).
+  const slot = slots.find((candidate) => candidate.available && slots.some((next) =>
+    next.available && next.sellerId === candidate.sellerId
+    && Date.parse(next.startsAt) === Date.parse(candidate.startsAt) + 30 * 60_000))
+  if (!slot) throw new Error("no available one-hour slot to book a fixture against")
 
   const stamp = `${Date.now()}${index}`
   const { session } = await api("/api/bookings", {
@@ -304,6 +308,7 @@ async function createBooking(client, index) {
       email: `fixture+${stamp}@brash3d.test`,
       telefono: "+57 300 000 0000",
       ciudad: "Bogota",
+      tienda: "Nike Sawgrass Mills",
       slotId: slot.id,
     },
   })

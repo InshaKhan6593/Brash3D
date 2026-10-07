@@ -5,7 +5,7 @@
 | Route | Purpose |
 | --- | --- |
 | `/` | Customer booking and appointment selection. |
-| `/login` | Staff authentication. |
+| `/login?next=<path>` | Staff authentication. `next` returns the user to the staff screen a link pointed at, such as a session from the seller's booking email (`src/lib/login-return.ts`, which accepts only the app's own staff screens). |
 | `/seller` | Authenticated seller/admin dashboard. Overview is the bare path. |
 | `/seller?tab=<tab>` | Bookings, customers, sessions, shipping, or schedule. |
 | `/seller?sessionId=<id>` | Seller live-shopping session panel. |
@@ -95,7 +95,7 @@ order already in flight, never change where it goes.
    payment already in flight can never land on a slot somebody else has taken.
 7. The customer opens the session page while the seller manages the cart.
 
-Slots are generated in one-hour intervals from 9:00 AM through 6:00 PM for the client-specified Nike Sawgrass outlet. A duplicate request for an active hold or confirmed slot receives a conflict response.
+Slots are half hours inside the opening hours the admin sets. A booking covers 60, 90 or 120 minutes from its start slot (`reservas.duracion_minutos`), locks every half hour it spans, and is refused if any is taken or past closing; a trigger on `reservas` keeps `disponibilidad.disponible` in step (migration 021). The customer writes the store to visit (`reservas.tienda_solicitada`, migration 022). A confirmed booking is emailed to the customer and the seller with a calendar invitation (`src/lib/email`).
 
 ## Language
 
@@ -167,7 +167,9 @@ db:check` fails if one does not.
 ## Live Session Flow
 
 - Seller actions add, remove, and change product quantities through `/api/sessions`.
-- The customer and seller session views poll PostgreSQL-backed APIs for updates every 1.5 seconds.
+- The customer's live cart subscribes through Supabase Realtime when configured, polling every 30 seconds beneath it, or every 1.5 seconds without it. The seller's session view polls every 1.5 seconds.
+- The seller can extend a live call by 30 minutes (`extendSession`) when the next half hour is inside opening hours and nobody else's. The booking grows by one half hour and `EXTENSION_PRICE` (10 USD) is added to the invoice as `sesiones_compra.cargo_extension`, untaxed and without commission.
+- Ending a session with no products cancels it, unless the call was extended: then it closes as an invoice for the extra time alone, 100% up front (`isExtraTimeOnly`). That invoice is paid without a delivery address, never gets a shipment, and does not count as a purchase for referral rewards.
 - Closing a session calculates subtotal, tax, and the Brash3D commission using the rates stored on that session. `TAX_RATE_FL` and `FEE_RATE` set the rates for newly created sessions; an existing session keeps the rates it was priced with, so a rate change never reprices a quoted invoice.
 - A referrer earns at most `REFERRAL_REWARD_MONTHLY_CAP` complimentary bookings per calendar month.
 - Each customer receives a referral code. A referrer earns one 20 USD booking reward only after the referred customer's first 65 percent payment; the next eligible booking automatically consumes that reward.
@@ -216,6 +218,18 @@ charge is the one reversed and `metodo_pago_recibido` keeps the offline method.
 Recording cash or a transfer is confirmed in a dialog, which warns when a Stripe
 link for the same balance is still outstanding. It closes the delivery with no
 undo, so it is not left one click away in a dropdown.
+
+## Booking Email
+
+`src/lib/email` sends the booking confirmation through Resend's HTTP API when a
+booking is confirmed (the Stripe webhook, or a referral reward that confirms it
+outright). The customer's email is Spanish and carries their durable order link
+and the appointment as an `.ics` invitation plus a Google Calendar link; the
+seller's copy is English with the same invitation. Templates are React Email
+components (`booking-email.tsx`); the logo is embedded as an inline attachment
+(`cid:`), so it never depends on the site or on the reader allowing remote
+images. A send returns an outcome and never throws, so a mail outage cannot undo
+a paid booking.
 
 ## UI
 

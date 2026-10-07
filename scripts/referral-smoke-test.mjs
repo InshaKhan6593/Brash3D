@@ -20,6 +20,14 @@ let bookingId
 let sessionId
 let slotId
 
+// Slots are half hours and a booking is an hour by default, so a start needs
+// the half hour after it free too (migration 021).
+function bookableHourSlot(slots) {
+  return slots.find((slot) => slot.available && slots.some((next) =>
+    next.available && next.sellerId === slot.sellerId
+    && Date.parse(next.startsAt) === Date.parse(slot.startsAt) + 30 * 60_000))
+}
+
 try {
   const referrer = await pool.query(`
     INSERT INTO clientes (nombre, email, telefono, ciudad, pais, codigo_referido)
@@ -45,8 +53,8 @@ try {
 
   const slotsResponse = await fetch(`${baseUrl}/api/slots`)
   const slotsBody = await slotsResponse.json()
-  const slot = slotsBody.slots.find((candidate) => candidate.available)
-  assert.ok(slot, "Expected an available appointment slot")
+  const slot = bookableHourSlot(slotsBody.slots)
+  assert.ok(slot, "Expected an available one-hour appointment")
   slotId = slot.id
 
   const bookingResponse = await fetch(`${baseUrl}/api/bookings`, {
@@ -57,6 +65,7 @@ try {
       email: referrerEmail,
       telefono: `+1555${String(stamp).slice(-7)}`,
       ciudad: "Bogota",
+      tienda: "Nike Sawgrass Mills",
       slotId,
     }),
   })

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { afterEach, describe, expect, it } from "vitest"
 import { query } from "@/lib/db"
 import { createBookingWithSession } from "@/lib/store/sessionStore"
-import { cleanup, newFixtures, SELLER_ID, type Fixtures } from "@/test/fixtures"
+import { cleanup, freeHalfHours, newFixtures, type Fixtures } from "@/test/fixtures"
 
 let fixtures: Fixtures
 
@@ -20,14 +20,8 @@ let slotOffset = 0
  */
 async function freeSlot(): Promise<string> {
   slotOffset += 1
-  const result = await query<{ id: string }>(`
-    INSERT INTO disponibilidad (vendedor_id, fecha, hora_inicio, hora_fin, disponible)
-    VALUES ($1::uuid, current_date + ($2 * interval '1 day'), make_time($3, 0, 0), make_time($3 + 1, 0, 0), true)
-    ON CONFLICT (vendedor_id, fecha, hora_inicio) DO UPDATE SET disponible = true
-    RETURNING id::text
-  `, [SELLER_ID, 700 + Math.floor(slotOffset / 6), 2 + (slotOffset % 6)])
-  fixtures.slots.push(result.rows[0].id)
-  return result.rows[0].id
+  const [first] = await freeHalfHours(fixtures, 700 + Math.floor(slotOffset / 6), 2 + (slotOffset % 6), 2)
+  return first
 }
 
 function person(tag: string) {

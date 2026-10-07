@@ -27,6 +27,14 @@ let localStaffId
 let localStaffCookie
 let boxId
 
+// Slots are half hours and a booking is an hour by default, so a start needs
+// the half hour after it free too (migration 021).
+function bookableHourSlot(slots) {
+  return slots.find((slot) => slot.available && slots.some((next) =>
+    next.available && next.sellerId === slot.sellerId
+    && Date.parse(next.startsAt) === Date.parse(slot.startsAt) + 30 * 60_000))
+}
+
 async function jsonRequest(path, options) {
   const response = await fetch(`${baseUrl}${path}`, options)
   const body = await response.json()
@@ -39,8 +47,8 @@ try {
   assert.equal(health.body.database, "connected")
 
   const slots = await jsonRequest("/api/slots")
-  const slot = slots.body.slots.find((candidate) => candidate.available)
-  assert.ok(slot, "Expected an available appointment slot")
+  const slot = bookableHourSlot(slots.body.slots)
+  assert.ok(slot, "Expected an available one-hour appointment")
   assert.ok(slots.body.slots.every((candidate) => candidate.outlet === "Nike Sawgrass"))
   slotId = slot.id
 
@@ -90,6 +98,7 @@ try {
     email,
     telefono: `+1555${String(stamp).slice(-7)}`,
     ciudad: "Bogota",
+    tienda: "Nike Sawgrass Mills",
     slotId,
   }
   const create = await jsonRequest("/api/bookings", {

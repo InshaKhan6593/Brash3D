@@ -32,16 +32,33 @@ let paidSlotId
 let redeemedSlotId
 
 try {
+  // Two one-hour appointments that do not overlap: each start needs the half
+  // hour after it free (slots are half hours, migration 021), and the second
+  // must begin after the first one's hour.
   const slots = await pool.query(`
-    SELECT d.id::text, d.vendedor_id::text AS seller_id, d.fecha::text,
-      to_char(d.hora_inicio, 'HH24:MI') AS start_time
-    FROM disponibilidad d
-    JOIN vendedores v ON v.id = d.vendedor_id AND v.activo = true
-    WHERE d.disponible = true AND d.fecha >= current_date
-    ORDER BY d.fecha, d.hora_inicio
-    LIMIT 2
+    WITH free AS (
+      SELECT d.id, d.vendedor_id, d.fecha, d.hora_inicio
+      FROM disponibilidad d
+      JOIN vendedores v ON v.id = d.vendedor_id AND v.activo = true
+      WHERE d.disponible = true AND d.fecha > current_date
+        AND EXISTS (
+          SELECT 1 FROM disponibilidad n
+          WHERE n.vendedor_id = d.vendedor_id AND n.fecha = d.fecha AND n.disponible = true
+            AND n.hora_inicio - d.hora_inicio = interval '30 minutes'
+        )
+    ), first AS (
+      SELECT * FROM free ORDER BY fecha, hora_inicio LIMIT 1
+    ), second AS (
+      SELECT free.* FROM free, first
+      WHERE free.vendedor_id = first.vendedor_id
+        AND (free.fecha > first.fecha OR free.hora_inicio - first.hora_inicio >= interval '60 minutes')
+      ORDER BY free.fecha, free.hora_inicio LIMIT 1
+    )
+    SELECT id::text, vendedor_id::text AS seller_id FROM first
+    UNION ALL
+    SELECT id::text, vendedor_id::text AS seller_id FROM second
   `)
-  assert.equal(slots.rows.length, 2, "Expected two available slots")
+  assert.equal(slots.rows.length, 2, "Expected two available one-hour appointments")
   paidSlotId = slots.rows[0].id
   redeemedSlotId = slots.rows[1].id
 
@@ -67,8 +84,8 @@ try {
   paidBookingId = paidBooking.rows[0].id
   const paidSession = await pool.query(`
     INSERT INTO sesiones_compra (
-      reserva_id, vendedor_id, cliente_id, estado, total, checkout_session_inicial_id
-    ) VALUES ($1::uuid, $2::uuid, $3::uuid, 'completada', 100.00, $4)
+      reserva_id, vendedor_id, cliente_id, estado, subtotal, total, checkout_session_inicial_id
+    ) VALUES ($1::uuid, $2::uuid, $3::uuid, 'completada', 81.30, 100.00, $4)
     RETURNING id::text
   `, [paidBookingId, slots.rows[0].seller_id, referredId, checkoutSessionId])
   paidSessionId = paidSession.rows[0].id
@@ -117,6 +134,7 @@ try {
       email: referrerEmail,
       telefono: `+1555${String(stamp).slice(-7)}`,
       ciudad: "Bogota",
+      tienda: "Nike Sawgrass Mills",
       slotId: redeemedSlotId,
     }),
   })

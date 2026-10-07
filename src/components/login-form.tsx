@@ -1,14 +1,16 @@
 "use client"
 
 import { FormEvent, useState } from "react"
-import { LockKeyhole } from "lucide-react"
+import { BrandWordmark } from "@/components/brand-logo"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ModeToggle } from "@/components/mode-toggle"
+import { returnPathFor } from "@/lib/login-return"
 
-export function LoginForm() {
+/** `next` is where the page that sent the user here was going; see `returnPathFor`. */
+export function LoginForm({ next }: { next?: string }) {
   const [error, setError] = useState("")
   const [submitting, setSubmitting] = useState(false)
 
@@ -30,7 +32,7 @@ export function LoginForm() {
       // router's pre-login entry for the destination and bounce straight back
       // here, which looks like the button doing nothing. `submitting` stays true
       // so the button is disabled while the browser navigates away.
-      window.location.assign(body.user?.role === "local_team" ? "/local-team" : "/seller")
+      window.location.assign(returnPathFor(body.user?.role ?? "seller", next))
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Unable to sign in")
       setSubmitting(false)
@@ -42,7 +44,7 @@ export function LoginForm() {
       <div className="absolute right-4 top-4"><ModeToggle /></div>
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <span className="mx-auto mb-2 flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground"><LockKeyhole /></span>
+          <BrandWordmark height={40} priority className="mx-auto mb-3" />
           <CardTitle>Staff sign in</CardTitle>
           <CardDescription>Access the Brash3D operations panel.</CardDescription>
         </CardHeader>

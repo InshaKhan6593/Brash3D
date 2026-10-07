@@ -43,6 +43,8 @@ export interface InvoiceCopy {
   tax: string
   commissionRate: string
   commission: string
+  /** Call time the seller added during the session; absent when none was. */
+  extraTime?: { duration: string; amount: string }
   total: string
   initialPercentage: string
   initial: string
@@ -77,6 +79,7 @@ const ES: WhatsAppCopy = {
     `Subtotal: $${invoice.subtotal}`,
     `Impuesto Florida (${invoice.taxRate}): $${invoice.tax}`,
     `Comisión Brash3D (${invoice.commissionRate}): $${invoice.commission}`,
+    ...(invoice.extraTime ? [`Tiempo adicional (${invoice.extraTime.duration}): $${invoice.extraTime.amount}`] : []),
     `*Total factura: $${invoice.total} USD*`,
     "",
     ...(invoice.balance
@@ -117,6 +120,7 @@ const EN: WhatsAppCopy = {
     `Subtotal: $${invoice.subtotal}`,
     `Florida tax (${invoice.taxRate}): $${invoice.tax}`,
     `Brash3D commission (${invoice.commissionRate}): $${invoice.commission}`,
+    ...(invoice.extraTime ? [`Extra session time (${invoice.extraTime.duration}): $${invoice.extraTime.amount}`] : []),
     `*Invoice total: $${invoice.total} USD*`,
     "",
     ...(invoice.balance

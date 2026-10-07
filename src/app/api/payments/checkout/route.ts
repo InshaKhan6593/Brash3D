@@ -29,18 +29,15 @@ async function POSTHandler(request: Request) {
 
   if (stage === "inicial") {
     if (!await verifyCustomerAccess(sessionId, accessToken)) return NextResponse.json({ error: "Session not found" }, { status: 404 })
-    if (address.length < 8 || address.length > 500 || city.length < 2 || city.length > 100) {
-      return NextResponse.json({ error: `Escribe una direccion de entrega completa y tu ciudad en ${DEFAULT_COUNTRY.name}.`, code: CHECKOUT_ERROR.INVALID_ADDRESS }, { status: 400 })
-    }
   } else {
     const staff = await requireStaff(["admin", "local_team"])
     if (!staff) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const result = await query<{
-    total: string; porcentaje_inicial: string; email: string; paid: string; existing_checkout: string | null; shipment_status: string | null
+    total: string; subtotal: string; porcentaje_inicial: string; email: string; paid: string; existing_checkout: string | null; shipment_status: string | null
   }>(`
-    SELECT sc.total::text, sc.porcentaje_inicial::text, c.email,
+    SELECT sc.total::text, sc.subtotal::text, sc.porcentaje_inicial::text, c.email,
       -- The stage is 'inicial' or 'final'. It was '65'/'35' until the split
       -- became configurable, and these three comparisons kept the old literals:
       -- every one was false, so an up-front payment read the final payment's
@@ -60,8 +57,16 @@ async function POSTHandler(request: Request) {
     code: stage === "inicial" ? CHECKOUT_ERROR.INVOICE_NOT_READY : CHECKOUT_ERROR.SHIPMENT_NOT_RECEIVED,
   }, { status: 409 })
   if (Number(session.paid) > 0) return NextResponse.json({ error: "Este pago ya fue completado.", code: CHECKOUT_ERROR.ALREADY_PAID }, { status: 409 })
-  if (stage === "inicial" && !await confirmDeliveryAddress(sessionId, address, city)) {
-    return NextResponse.json({ error: "La direccion de entrega ya no se puede cambiar.", code: CHECKOUT_ERROR.ADDRESS_LOCKED }, { status: 409 })
+  // An invoice for extra call time alone ships nothing, so it is paid without a
+  // delivery address. Every other up-front payment confirms where the goods go.
+  const extraTimeOnly = Number(session.subtotal) <= 0
+  if (stage === "inicial" && !extraTimeOnly) {
+    if (address.length < 8 || address.length > 500 || city.length < 2 || city.length > 100) {
+      return NextResponse.json({ error: `Escribe una direccion de entrega completa y tu ciudad en ${DEFAULT_COUNTRY.name}.`, code: CHECKOUT_ERROR.INVALID_ADDRESS }, { status: 400 })
+    }
+    if (!await confirmDeliveryAddress(sessionId, address, city)) {
+      return NextResponse.json({ error: "La direccion de entrega ya no se puede cambiar.", code: CHECKOUT_ERROR.ADDRESS_LOCKED }, { status: 409 })
+    }
   }
 
   let stripe
@@ -114,7 +119,7 @@ async function POSTHandler(request: Request) {
   const checkout = await stripe.checkout.sessions.create({
     mode: "payment",
     customer_email: session.email,
-    line_items: [{ price_data: { currency: "usd", unit_amount: amount, product_data: { name: `Brash3D ${stage === "inicial" ? "initial" : "final"} payment` } }, quantity: 1 }],
+    line_items: [{ price_data: { currency: "usd", unit_amount: amount, product_data: { name: extraTimeOnly ? "Brash3D extra session time" : `Brash3D ${stage === "inicial" ? "initial" : "final"} payment` } }, quantity: 1 }],
     metadata: { session_id: sessionId, payment_stage: `session_${stage}` },
     payment_intent_data: { metadata: { session_id: sessionId, payment_stage: `session_${stage}` } },
     // The final charge is opened by the Colombia team, so that request carries

@@ -20,6 +20,8 @@ import {
 import { CustomerHeader } from "@/components/customer-header"
 import { WhatsAppIcon } from "@/components/whatsapp-icon"
 import { formatAppointment } from "@/lib/appointment"
+import { formatDuration } from "@/lib/booking-duration"
+import { isExtraTimeOnly } from "@/lib/order-kind"
 import { DEFAULT_COUNTRY } from "@/lib/countries"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -384,6 +386,15 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
     const delivered = shipment?.estado === "entregado"
     const country = countryFor(session.cliente.pais).name
 
+    // Extra call time and no products: one payment, nothing to ship.
+    if (isExtraTimeOnly(session)) {
+      return [
+        { id: "booked", title: copy.booked, description: copy.bookedBody, status: "completed" },
+        { id: "shopping", title: copy.shopping, description: copy.shoppingClosed, status: "completed" },
+        { id: "initial", title: copy.extraTime, description: paidInitial ? copy.initialPaid(formatCurrency(session.montoPagadoInicial)) : copy.extraTimePending, status: paidInitial ? "completed" : "current" },
+      ]
+    }
+
     return [
       { id: "booked", title: copy.booked, description: copy.bookedBody, status: "completed" },
       { id: "shopping", title: copy.shopping, description: closed ? copy.shoppingClosed : copy.shoppingLive, status: closed ? "completed" : "current" },
@@ -427,6 +438,7 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
   const paymentFinal = finalAmount(session.total, session.porcentajeInicial)
   const paidUpFront = isPaidInFullUpFront(session.porcentajeInicial)
   const country = countryFor(session.cliente.pais)
+  const extraTimeOnly = isExtraTimeOnly(session)
   const suggestedDeliveryCity = session.deliveryCity || country.cities.find((city) =>
     city.localeCompare(session.cliente.ciudad || "", "es", { sensitivity: "base" }) === 0
   ) || ""
@@ -520,7 +532,7 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
               <CardHeader className="text-center"><CardDescription>{scheduledTimePassed ? t.session.waitingForSeller : t.session.startsIn}</CardDescription><CardTitle className="font-mono text-3xl sm:text-4xl">{countdown}</CardTitle></CardHeader>
               <CardContent className="grid gap-4 sm:grid-cols-2">
                 <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.session.appointment}</p><p className="mt-1 font-semibold">{formatAppointment(scheduledAt, dateLocale, DEFAULT_COUNTRY.timeZone)}</p></div>
-                <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.session.outlet}</p><p className="mt-1 font-semibold">{session.outlet || "Nike Sawgrass"}</p><p className="text-sm text-muted-foreground">{t.session.withSeller(session.vendedor.nombre)}</p></div>
+                <div className="rounded-md bg-muted p-4"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t.session.outlet}</p><p className="mt-1 font-semibold">{session.outlet || "—"}</p><p className="text-sm text-muted-foreground">{t.session.withSeller(session.vendedor.nombre)}</p></div>
                 <div className="rounded-md bg-muted p-4 sm:col-span-2"><div className="flex items-center justify-between gap-3"><div><p className="font-semibold">{t.session.bookingPayment}</p><p className="text-sm text-muted-foreground">{t.session.bookingSecured}</p></div><Badge variant="secondary"><CheckCircle2 />{session.bookingFee > 0 ? t.session.feePaid : t.session.referralReward}</Badge></div></div>
                 <p className="text-center text-xs text-muted-foreground sm:col-span-2">{t.session.keepOpen}</p>
               </CardContent>
@@ -578,8 +590,8 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
                 {!hasProducts ? (
                   <div className="rounded-md bg-muted py-16 text-center">
                     <Package className="mx-auto mb-3 size-10 text-muted-foreground" />
-                    <p className="font-medium">{t.session.cartEmptyTitle}</p>
-                    <p className="mt-1 text-sm text-muted-foreground">{t.session.cartEmptyBody}</p>
+                    <p className="font-medium">{isLive ? t.session.cartEmptyTitle : t.session.cartNoneBoughtTitle}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{isLive ? t.session.cartEmptyBody : t.session.cartNoneBoughtBody}</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -646,6 +658,7 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
                   <>
                     <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t.session.floridaTax(formatPercent(session.tasaImpuesto, dateLocale))}</span><span>{formatCurrency(session.impuesto)}</span></div>
                     <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t.session.commission(formatPercent(session.tasaComision, dateLocale))}</span><span>{formatCurrency(session.comision)}</span></div>
+                    {session.cargoExtension > 0 && <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t.session.extraTime(formatDuration(session.minutosExtension))}</span><span>{formatCurrency(session.cargoExtension)}</span></div>}
                     <Separator />
                     <div className="flex justify-between text-lg font-bold"><span>{t.session.invoiceTotal}</span><span>{formatCurrency(session.total)}</span></div>
                   </>
@@ -657,7 +670,19 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
                 total it is a share of: both amounts derive from a commission
                 and an up-front percentage the seller confirms at close, so
                 neither is a real figure yet. */}
-            {!isLive && <Card>
+            {extraTimeOnly && <Card>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><CreditCard className="size-5" />{t.session.extraTimeOnlyTitle}</CardTitle><CardDescription>{t.session.extraTimeOnlyBody}</CardDescription></CardHeader>
+              <CardContent className="space-y-3">
+                <div className="rounded-md bg-muted p-4">
+                  <div className="flex items-start justify-between gap-3"><p className="font-medium">{t.session.extraTime(formatDuration(session.minutosExtension))}</p>{hasPaidInitial ? <Badge><CheckCircle2 />{t.session.paid}</Badge> : <Badge variant="secondary">{t.session.pending}</Badge>}</div>
+                  <p className="mt-3 text-2xl font-bold">{formatCurrency(session.total)}</p>
+                  {!hasPaidInitial && <form className="mt-4 space-y-3" onSubmit={startInitialPayment}>{paymentErrorMessage && <p className="text-sm text-destructive">{paymentErrorMessage}</p>}<Button className="w-full" disabled={paymentStarting}>{paymentStarting ? t.session.openingPayment : t.session.payExtraTime(formatCurrency(session.total))}</Button></form>}
+                  <p className="mt-3 text-xs text-muted-foreground">{t.session.extraTimeNothingShips}</p>
+                </div>
+              </CardContent>
+            </Card>}
+
+            {!isLive && !extraTimeOnly && <Card>
               <CardHeader><CardTitle className="flex items-center gap-2 text-xl"><CreditCard className="size-5" />{t.session.paymentPlan}</CardTitle></CardHeader>
               <CardContent className="space-y-3">
                 <div className="rounded-md bg-muted p-4">
@@ -673,7 +698,7 @@ export default function CustomerSessionPage({ params, searchParams }: PageProps<
               </CardContent>
             </Card>}
 
-            {!isLive && <Card>
+            {!isLive && !extraTimeOnly && <Card>
               <CardContent className="flex gap-3 py-5">
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10"><MapPin className="size-5" /></span>
                 <div><p className="font-medium">{t.session.shippingTo(country.name)}</p><p className="text-sm text-muted-foreground">{session.envio ? t.session.currentStatus(shipmentStatusLabel(session.envio.estado, country.name, t)) : t.session.shippingPending}</p>{session.envio?.labelCode && <p className="mt-2 text-sm"><span className="text-muted-foreground">{t.session.shipmentCode}</span><span className="font-mono font-semibold">{session.envio.labelCode}</span></p>}</div>

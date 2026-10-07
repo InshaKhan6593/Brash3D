@@ -1,11 +1,13 @@
 # Brash3D Live Shopping
 
-Brash3D is a Next.js MVP for booking a live outlet-shopping session, managing it from a seller dashboard, and following the cart and payment progress from a customer view.
+Mi Global Shopper (a Brash3D Technologies brand) is a Next.js MVP for booking a live outlet-shopping session, managing it from a seller dashboard, and following the cart and payment progress from a customer view.
 
 ## What is included
 
 - Customer booking from today through the end of next month.
-- One-hour slots from 9:00 AM to 6:00 PM at each configured demo outlet.
+- Half-hour start times in Florida time; the customer books 1 h (20 USD), 1 h 30 (30 USD) or 2 h (40 USD) and names the outlet or store to visit.
+- One customer at a time; the seller can extend a live call by 30 minutes (10 USD on the invoice) when the next half hour is free.
+- Booking confirmation email through Resend, with a calendar invitation for the customer and the seller.
 - Booked slots stay visible and disabled.
 - Seller dashboard with bookings, customers, compact session tables, row actions, pagination, and a notification center.
 - Seller-created bookings and a live product-entry panel.
@@ -234,8 +236,9 @@ touched. See [Specification decisions](docs/SPEC_DECISIONS.md) for the detail.
 Row level security is enabled on every public table by migration 015, which is
 what stops Supabase's PostgREST endpoint serving the schema to anyone holding
 the publishable key. The application connects as the table owner and so is
-unaffected. Supabase Auth and Realtime are still unused: staff sessions are the
-app's own, and the session views poll.
+unaffected. Supabase Auth is unused: staff sessions are the app's own. The
+customer's live cart subscribes through Supabase Realtime when it is configured
+(migration 018), with polling beneath it; every other view polls.
 
 ## Logging
 
@@ -327,6 +330,17 @@ Functions default to `iad1`. Keep the Supabase project in a nearby region — a
 database on another continent costs a round trip on every query, and a page
 makes several.
 
+### Booking email (Resend)
+
+The booking confirmation email and its calendar invitation go through Resend,
+and are optional: with `RESEND_API_KEY` unset nothing is emailed. Set
+`RESEND_API_KEY`, `EMAIL_FROM` and `EMAIL_REPLY_TO` on the host (and
+`EMAIL_STAFF_TO` to redirect the seller's copy while testing).
+
+Until a domain is verified in Resend, `onboarding@resend.dev` delivers only to
+the address that owns the Resend account, so customers receive nothing. Verify
+the client's domain in Resend and send from an address on it before launch.
+
 ### Before real payments
 
 - Set `STRIPE_MODE=live` with a rotated live secret and a live webhook secret.
@@ -337,6 +351,9 @@ makes several.
   uptime monitoring.
 - Add Meta WhatsApp and courier credentials only after the client selects those
   providers.
+- Verify the sending domain in Resend and set `EMAIL_FROM` to an address on it.
+- Replace the demo seller email (`maria@brash3d.com`) with the personal
+  shopper's real address: the seller's calendar invitation goes there.
 
 ## Documentation
 
@@ -350,7 +367,8 @@ makes several.
 
 Everything below is tracked in detail in [Implementation status](docs/IMPLEMENTATION_STATUS.md).
 
-- **WhatsApp Cloud API notifications** — see [the plan](docs/WHATSAPP.md); a no-template, no-cost path exists that needs nothing from the client.
+- **WhatsApp templates and a verified number** — the confirmation, product echo and invoice are built; production still runs on a Meta test number, and the booking template waits on the client's Business Verification. See [the plan](docs/WHATSAPP.md).
+- **Email to real customers** — built, but needs the client's domain verified in Resend (see "Booking email" above).
 - **Automatic courier tracking** — needs the client's chosen carrier and API. USA operations types the courier and tracking number today.
 - **A Spanish seller/admin dashboard** — the customer screens and the Colombia panel now switch between Spanish and English; the USA dashboard is English only. The translation layer is in place, so this is copy plus wiring rather than new machinery.
 - **Realtime for the Colombia panel** — the customer's live cart is on Supabase Realtime; the local-team panel polls every 5 seconds. The specification never asked for a local-team subscription, so this is a new feature rather than an outstanding gap — see [Implementation status](docs/IMPLEMENTATION_STATUS.md) item 5.

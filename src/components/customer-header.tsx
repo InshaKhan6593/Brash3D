@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { CalendarDays } from "lucide-react"
+import { BrandLogo } from "@/components/brand-logo"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { LanguageToggle } from "@/components/language-toggle"
@@ -24,11 +25,9 @@ export function CustomerHeader({ status = "booking" }: CustomerHeaderProps) {
     <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4">
         <Link href="/" className="flex min-w-0 items-center gap-3">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
-            B3D
-          </span>
+          <BrandLogo size={40} priority />
           <span className="min-w-0">
-            <span className="block truncate font-bold leading-none">Brash3D</span>
+            <span className="block truncate font-bold leading-none">Mi Global Shopper</span>
             <span className="hidden truncate text-xs text-muted-foreground sm:block">{t.header.tagline}</span>
           </span>
         </Link>

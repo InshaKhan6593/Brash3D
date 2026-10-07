@@ -13,7 +13,15 @@ import { CustomerHeader } from "@/components/customer-header"
 import { DEFAULT_COUNTRY } from "@/lib/countries"
 import { intlLocale } from "@/lib/i18n/locale"
 import { useLocale } from "@/lib/i18n/provider"
-import { formatAppointment } from "@/lib/appointment"
+import { formatAppointment, OUTLET_TIME_ZONE } from "@/lib/appointment"
+import {
+  BOOKING_DURATIONS,
+  bookingPrice,
+  type BookingDuration,
+  DEFAULT_BOOKING_DURATION,
+  bookableStarts,
+  formatDuration,
+} from "@/lib/booking-duration"
 import { CUSTOMER_ACCESS_PARAM, customerSessionPath } from "@/lib/customer-link"
 import { TimeSlot } from "@/lib/types"
 
@@ -84,6 +92,27 @@ function formatRemaining(milliseconds: number): string {
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, "0")}`
 }
 
+/** "miércoles, 7 de octubre · 9:00 a. m. – 10:30 a. m." on the outlet's clock. */
+function floridaRange(slot: TimeSlot, minutes: number, locale: string): string {
+  const start = new Date(slot.startsAt)
+  const end = new Date(start.getTime() + minutes * 60_000)
+  const time = { hour: "numeric", minute: "2-digit", timeZone: OUTLET_TIME_ZONE } as const
+  const date = start.toLocaleDateString(locale, { weekday: "long", month: "long", day: "numeric", timeZone: OUTLET_TIME_ZONE })
+  return `${date} · ${start.toLocaleTimeString(locale, time)} – ${end.toLocaleTimeString(locale, time)}`
+}
+
+/**
+ * The start on the customer's own clock, only when it differs from Florida's.
+ * Colombia matches Miami every winter, and a second identical time reads like a
+ * mistake.
+ */
+function colombiaStart(slot: TimeSlot, locale: string): string | null {
+  const start = new Date(slot.startsAt)
+  const options = { hour: "numeric", minute: "2-digit" } as const
+  const local = start.toLocaleTimeString(locale, { ...options, timeZone: DEFAULT_COUNTRY.timeZone })
+  return local === start.toLocaleTimeString(locale, { ...options, timeZone: OUTLET_TIME_ZONE }) ? null : local
+}
+
 interface BookingResult {
   checkoutUrl?: string
   rewardApplied?: boolean
@@ -98,6 +127,7 @@ export default function Home() {
   const [slots, setSlots] = useState<TimeSlot[]>([])
   const [selectedDate, setSelectedDate] = useState("")
   const [selectedSlotId, setSelectedSlotId] = useState("")
+  const [duration, setDuration] = useState<BookingDuration>(DEFAULT_BOOKING_DURATION)
   const [requiresLocalInvoice, setRequiresLocalInvoice] = useState(false)
   const [loadingSlots, setLoadingSlots] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -248,8 +278,12 @@ export default function Home() {
   const dates = Object.keys(slotsByDate)
   const activeDate = selectedDate || dates[0] || ""
   const activeSlots = slotsByDate[activeDate] || []
-  const availableCount = activeSlots.filter((slot) => slot.available).length
-  const selectedSlot = slots.find((slot) => slot.id === selectedSlotId)
+  const startable = useMemo(() => bookableStarts(slotsByDate[activeDate] || [], duration), [slotsByDate, activeDate, duration])
+  const availableCount = startable.size
+  // A start that no longer fits -- the length grew, or the slot was taken --
+  // stops counting as selected rather than being sent and refused.
+  const selectedSlot = startable.has(selectedSlotId) ? slots.find((slot) => slot.id === selectedSlotId) : undefined
+  const price = bookingPrice(duration)
 
   // The API answers in Spanish for the customer, so a server message is shown
   // as-is; only our own markers are translated here.
@@ -257,6 +291,8 @@ export default function Home() {
     ? t.booking.loadError
     : error === "PHONE_INVALID"
       ? t.booking.phoneError
+    : error === "STORE_REQUIRED"
+      ? t.booking.storeError
     : error === "BOOKING_FAILED"
       ? t.booking.bookingError
       : error === "CHECKOUT_FAILED"
@@ -293,8 +329,10 @@ export default function Home() {
           telefono: form.get("telefono"),
           ciudad: form.get("ciudad"),
           referralCode: form.get("referralCode"),
+          tienda: form.get("tienda"),
           requiresLocalInvoice,
-          slotId: selectedSlotId,
+          slotId: selectedSlot?.id,
+          duracionMinutos: duration,
         }),
       })
       const data = (await response.json()) as BookingResult & { error?: string; code?: string }
@@ -400,18 +438,37 @@ export default function Home() {
                       }}
                     />
                   </div>
+                  <div className="space-y-2">
+                    <Label id="booking-duration">{t.booking.durationLabel}</Label>
+                    <div role="radiogroup" aria-labelledby="booking-duration" className="grid grid-cols-3 gap-2">
+                      {BOOKING_DURATIONS.map((minutes) => (
+                        <Button
+                          key={minutes}
+                          type="button"
+                          role="radio"
+                          aria-checked={duration === minutes}
+                          variant={duration === minutes ? "default" : "outline"}
+                          onClick={() => setDuration(minutes)}
+                          className="h-auto min-h-9 whitespace-normal px-2 py-1.5 text-xs sm:text-sm"
+                        >
+                          {t.booking.durationOption(formatDuration(minutes), bookingPrice(minutes))}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
                   <section id="horarios" className="scroll-mt-20 space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <h2 className="text-sm font-medium text-muted-foreground first-letter:uppercase">{new Date(`${activeDate}T12:00:00`).toLocaleDateString(dateLocale, { weekday: "long" })}</h2>
                       <span className="text-xs text-muted-foreground">{t.booking.slotsAvailable(availableCount)}</span>
                     </div>
+                    <p className="text-xs font-medium text-muted-foreground">{t.booking.floridaTime}</p>
                     <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                     {activeSlots.map((slot) => (
                       <Button
                         key={slot.id}
                         type="button"
-                        variant={selectedSlotId === slot.id ? "default" : "outline"}
-                        disabled={!slot.available}
+                        variant={selectedSlot?.id === slot.id ? "default" : "outline"}
+                        disabled={!startable.has(slot.id)}
                         onClick={() => setSelectedSlotId(slot.id)}
                         className="h-12 flex-col justify-center gap-0 px-2 leading-tight"
                       >
@@ -432,14 +489,27 @@ export default function Home() {
               <CardDescription>{t.booking.fixedFee}</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-1">
-              {selectedSlot && (
-                <div className="rounded-md bg-muted p-3 text-sm sm:col-span-2 lg:col-span-1">
-                  <p className="font-semibold">{t.booking.selectedAppointment}</p>
-                  <p className="text-muted-foreground">
-                    {formatAppointment(new Date(selectedSlot.startsAt), dateLocale, DEFAULT_COUNTRY.timeZone)} · {selectedSlot.outlet}
-                  </p>
+              {/* The client's request: the selected appointment carries a blank
+                  for the store, because a customer arriving from an Instagram
+                  ad names the store they saw. */}
+              <div className="space-y-2 rounded-md bg-muted p-3 text-sm sm:col-span-2 lg:col-span-1">
+                <p className="font-semibold">{t.booking.selectedAppointment}</p>
+                {selectedSlot ? (
+                  <>
+                    <p className="text-muted-foreground">
+                      {floridaRange(selectedSlot, duration, dateLocale)} · {t.booking.floridaTime}
+                    </p>
+                    {colombiaStart(selectedSlot, dateLocale) && (
+                      <p className="text-xs text-muted-foreground">{t.booking.colombiaTime(colombiaStart(selectedSlot, dateLocale)!)}</p>
+                    )}
+                  </>
+                ) : <p className="text-muted-foreground">{t.booking.noSlotYet}</p>}
+                <div className="space-y-1.5 pt-1">
+                  <Label htmlFor="tienda">{t.booking.store}</Label>
+                  <Input id="tienda" name="tienda" required minLength={2} maxLength={200} placeholder={t.booking.storePlaceholder} className="h-9 bg-background" />
+                  <p className="text-xs text-muted-foreground">{t.booking.storeHint}</p>
                 </div>
-              )}
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="nombre">{t.booking.name}</Label>
                 <Input id="nombre" name="nombre" required placeholder={t.booking.namePlaceholder} className="h-9" />
@@ -478,7 +548,7 @@ export default function Home() {
                 </div>
               </div>}
               {errorMessage && <p className="text-sm text-destructive sm:col-span-2 lg:col-span-1">{errorMessage}</p>}
-              {!selectedSlotId && (
+              {!selectedSlot && (
                 <button
                   type="button"
                   onClick={() => document.getElementById("horarios")?.scrollIntoView({ behavior: "smooth", block: "center" })}
@@ -487,8 +557,8 @@ export default function Home() {
                   {t.booking.pickSlotFirst} <span className="font-medium underline">{t.booking.seeSlots}</span>
                 </button>
               )}
-              <Button className="w-full sm:col-span-2 lg:col-span-1" size="lg" disabled={!selectedSlotId || submitting}>
-                {submitting ? t.booking.opening : t.booking.payAndBook}
+              <Button className="w-full sm:col-span-2 lg:col-span-1" size="lg" disabled={!selectedSlot || submitting}>
+                {submitting ? t.booking.opening : t.booking.payAndBook(price)}
               </Button>
               <p className="text-center text-xs text-muted-foreground sm:col-span-2 lg:col-span-1">
                 {t.booking.stripeNote}

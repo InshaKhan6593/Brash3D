@@ -6,13 +6,33 @@ designs and the 14-section technical specification).
 ## Delivered
 
 ### Booking and availability
-- Customer booking interface with date selection and all visible hourly slots.
-- Availability from today through the end of next month, one Nike Sawgrass schedule, 10 hourly slots per day from 9:00 AM to 6:00 PM.
+- Customer booking interface with date selection, booking length and half-hour start times.
+- Availability from today through the end of next month, from the admin's weekly opening hours.
+- The customer names the outlet or store to visit, in the selected-appointment box (client request; migration 022). It is shown to the seller, on the order page, and in the WhatsApp and email confirmations. Bookings made before keep showing the seller's assigned outlet.
 - Unavailable slots remain visible, disabled, and labelled as booked.
 - Transactional slot locking, duplicate-booking protection, and atomic 15-minute pending-payment holds with automatic release.
 - Admin-managed opening hours. A weekly template per seller sets which days are open and between which hours, and dated exceptions close or re-time a single day for a holiday or an outlet closure. Slot generation reads both instead of the hard-coded `generate_series(9, 18)` that produced ten slots every day of the week with no way to close a Sunday. Migration 016 seeds the previous behaviour exactly — all seven days, 09:00 to 19:00 — so deploying it changes no customer-visible availability; closing a day is then a decision made in the panel. Reconciliation runs in both directions: slots left over from a previous schedule are removed, except where a reserva already points at one, because that appointment belongs to a customer. Those surface in the panel as a warning listing each stranded booking rather than being silently dropped.
 - Seller-side booking creation on behalf of a customer.
 - **Coming back from Stripe without paying no longer locks the customer out of their own slot.** Pressing Back on the payment page restored the booking page as it was before the hold, so the slot looked free, and booking it again was refused because the customer's own unpaid hold was blocking it -- for the full 15 minutes, with no way back to the payment. The page now remembers the order it sent to Stripe, asks the server about it on every visit (including a Back-button restore from the browser cache), and shows the held appointment with a countdown, **Continuar al pago** and **Elegir otro horario**. Stripe's own back arrow releases the slot straight away, and booking again while a hold is live releases it first, so the same slot can be picked again. Releasing expires the Stripe checkout before freeing the slot, so a payment in flight cannot land on a slot someone else has taken. Pinned by `src/lib/store/booking-hold.test.ts`.
+
+### Half-hour slots, booking length and extensions
+- Slots are half hours (9:00, 9:30, 10:00 …). The customer chooses 1 h (20 USD), 1 h 30 (30 USD) or 2 h (40 USD), and the grid offers only start times with enough free half hours before closing. Prices live in `src/lib/booking-duration.ts`, shared by the page, the API and Stripe.
+- One customer at a time. A booking locks every half hour it spans, in time order, so two overlapping bookings serialise and the second is refused. Migration 021 keeps `disponibilidad.disponible` in step through a trigger on `reservas`, which knows each booking's length -- every writer (booking, webhook, hold expiry, release, extension) frees or blocks the right rows without repeating the arithmetic.
+- The seller can extend a live call by 30 minutes from the session panel. It is refused when the next half hour is outside opening hours or another customer's, and adds 10 USD to the invoice as its own line (`cargo_extension`), untaxed and without commission. The customer does not book again.
+- Bookings made before the change are one hour each, and the half hours they now cover are generated already blocked.
+- A referral reward covers a 1-hour booking. A longer booking is paid in full and keeps the reward for the next one, rather than spending it on a hold that may expire.
+- Booking page copy follows the client's notes: "el outlet o tienda de tu interés", the per-hour price sentence, and times labelled Florida time (Miami), with the Colombia time beside it when the two differ.
+- Extra time is charged even when nothing is bought, like the booking fee. A session that was extended and ends with no products closes as an invoice for the extension alone (`isExtraTimeOnly`, `src/lib/order-kind.ts`), 100% up front: the customer pays it from their order page without a delivery address, nothing ships, it never reaches the Colombia team, and it does not count as a purchase for referral rewards. Without an extension, ending with no purchase still cancels outright. Pinned by `src/lib/store/extra-time-only.test.ts`.
+- Pinned by `src/lib/store/half-hour-slots.test.ts`.
+
+### Brand and sign-in
+- Customer screens, the browser tab and the email carry the client's Mi Global Shopper logo; the sign-in page, seller panel and Colombia panel carry the Brash3D Technologies wordmark (on a white plate in dark mode, so the client's grey letters stay legible).
+- Signing in returns to the staff screen a link pointed at -- the seller's booking email opens that session's live screen, not the dashboard. Only the app's own staff screens are accepted as a destination, and only the ones the role may open (`src/lib/login-return.ts`, pinned by its test).
+
+### Booking confirmation email
+- Sent through Resend when a booking is confirmed (Stripe webhook, or a referral reward that confirms it outright). The customer gets a Spanish HTML email with the Florida and Colombia times, the length, the amount paid, their own order link (the same durable link the WhatsApp confirmation carries) and a calendar invitation (`.ics` plus a Google Calendar link). The seller gets an English copy with the same invitation.
+- Optional, like WhatsApp: with `RESEND_API_KEY` unset nothing is sent. A send never throws; the booking is confirmed either way.
+- Until a domain is verified in Resend, `onboarding@resend.dev` delivers only to the Resend account's own address. `EMAIL_STAFF_TO` redirects the staff copy while testing.
 
 ### Live session
 - Seller live product entry, cart editing, quantity changes, and session closure.
@@ -91,7 +111,7 @@ designs and the 14-section technical specification).
 - **The slot list holds up under a crowd.** A stress test against the live site (k6, climbing to 300 simultaneous visitors) produced no errors, but `/api/slots` slowed to 2.6 s at the 95th percentile while the page stayed at 0.8 s. The cause was the slot generation that runs on every read: `INSERT ... ON CONFLICT DO NOTHING` still attempts all ~600 rows and takes a lock on each key, so concurrent visitors queued behind one another on the same rows even though nothing was ever inserted. It now filters out existing slots first, so a read with nothing to generate writes nothing -- measured locally at 100 concurrent calls, median 147 ms → 28 ms and p95 490 ms → 42 ms. The response is also held at Vercel's CDN for 5 seconds (`s-maxage=5`, never in the browser), so a burst costs one database query per 5 seconds instead of one per visitor. That is safe because the list only guides the choice: booking locks the slot row, and a race of 10 simultaneous bookings on one slot produced exactly one. The booking page asks for `?fresh=` whenever it has just changed a slot itself (a released hold, a refused booking, a Back-button return), so the customer never waits on the cache to see their own change.
 - Slot listing runs as one database round trip instead of three. Server-side each statement takes under 4 ms, but every statement costs a full network round trip to a managed database — about 160 ms to the Tokyo region — so the public booking page spent most of a second waiting on the network. Generating missing slots, releasing expired holds and reading the list now travel together over the simple query protocol, and the expired-hold release is a single CTE rather than a read followed by a dependent write. Measured on the booking page: 727-1018 ms before, 184 ms after.
 - Row level security enabled on every public table (`015_enable_row_level_security.sql`, and each later migration for the tables it adds — 21 tables today), with the privileges Supabase grants `anon` and `authenticated` by default revoked. Supabase serves PostgREST over the `public` schema to anyone holding the publishable key, which is public by design, and that endpoint is live whether or not the application uses supabase-js — this one does not. Verified: before the migration every table answered reads and deletes over that endpoint, `staff_users.password_hash` included; after it, every one answers 401. The application is unaffected because it connects as the table owner, which bypasses RLS.
-- Database TLS decided once in `src/lib/db-ssl.mjs` and shared by the application pool and the migration runner, the way `password.mjs` is shared with `create-staff.mjs`. A local host connects in the clear; every other host verifies against the system CA store, which is what a managed provider such as Supabase requires. `DATABASE_SSL` and `DATABASE_SSL_CA` override it.
+- Database TLS decided once in `src/lib/db-ssl.mjs` and shared by the application pool and the migration runner, the way `password.mjs` is shared with `create-staff.mjs`. A local host connects in the clear; every other host verifies the server certificate. Supabase signs with a private root no system store carries, so it is pinned through `DATABASE_SSL_CA_FILE` or `DATABASE_SSL_CA`; `DATABASE_SSL` overrides the mode.
 - `npm run db:check` verifies a hosted database without writing to it: the TLS settings in force, a migration on disk the database has never applied, a migration file edited after it was applied, a public table without row level security, and any privilege `anon` or `authenticated` still holds. It exits non-zero, so a deploy can gate on it. Three of those matter only once the database is remote — a serverless host has no pre-deploy hook, so migrations are run by hand and the code can ship ahead of its schema.
 - Scheduled maintenance (specification section 14): expired booking holds are released on a timer rather than only when somebody reads the slot list, and the three tables that otherwise only grow — `stripe_webhook_events`, `customer_session_access` and `request_rate_limits` — are pruned. Webhook-event retention deliberately outlasts Stripe's three-day retry window, since that ledger is what stops a retry being charged twice. A long-running host runs it in-process from `src/instrumentation.ts`; a serverless host, where timers never fire between requests, drives the same work through `POST /api/maintenance`, which stays closed unless `MAINTENANCE_SECRET` is set.
 
@@ -195,7 +215,7 @@ seller tabs, all three Colombia views and the customer screens.
 ### Platform
 - PostgreSQL persistence for every entity, with repeatable numbered migrations.
 - Staff login/logout, database-backed sessions, account lockout, rate limiting, and role authorization.
-- Secure customer order links using hashed tokens exchanged for HTTP-only cookies.
+- Secure customer order links carrying a hashed, 90-day access token in the URL, with an HTTP-only cookie as a convenience.
 - Spanish customer screens and Spanish Colombia local-team panel; English USA seller/admin dashboard.
 - Responsive shadcn/ui components with light, dark, and system themes.
 - Database health endpoint and repeatable API smoke tests.
@@ -224,9 +244,9 @@ reaches a customer whose window happens to be open -- in practice, a tester.
 The code prefers the template whenever `WHATSAPP_TEMPLATE_BOOKING` names one,
 so nothing changes but the environment.
 
-Still worth adding, and independent of Meta: **a booking confirmation email**.
-It needs an email provider and nothing else, and it covers the customer who
-gives a phone number WhatsApp does not reach.
+The booking confirmation email is now built (see "Booking confirmation email"
+above) and covers the customer WhatsApp does not reach -- once the client
+verifies a sending domain in Resend.
 
 ### 2. Nothing is sent when the session starts
 The customer is told their session has begun only if they are looking at their
@@ -380,7 +400,7 @@ Sentry can consume them without code changes; only the destination is missing.
 
 ## Demo Data Assumptions
 
-- Nike Sawgrass is the single outlet shown in the supplied client design.
+- Nike Sawgrass, the outlet in the original design, remains the seller's assigned outlet and the fallback for bookings made before the store field existed.
 - Maria Garcia is the active seeded seller.
 - The 20 USD booking fee, Florida tax, and Brash3D commission are represented in the demo flow.
 

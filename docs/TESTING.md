@@ -48,6 +48,23 @@ SEED_ADMIN_PASSWORD='<admin password>' SEED_SELLER_PASSWORD='<seller password>' 
 Each script removes the records it creates. Together with the Vitest suite and
 the manual passes below, these are the whole safety net.
 
+### Browser checks (Playwright)
+
+`scripts/booking-features-ui-smoke.py` drives a real browser through the
+half-hour booking features: booking lengths and prices, the Florida-time label,
+the required store field, a booking reaching Stripe, half-hour blocking, the
+seller's email link signing in to that session, extending a call, ending it
+with extra time and no purchase, the customer's 10 USD payment with no address,
+and the Colombia panel not receiving that order. It removes what it creates.
+
+```bash
+BRASH3D_QA_SELLER_PASSWORD='<seller password>' BRASH3D_QA_LOCAL_TEAM_PASSWORD='<local team password>'   DATABASE_URL='<local database URL>' python scripts/booking-features-ui-smoke.py
+```
+
+It needs `pip install playwright psycopg` and `playwright install chromium`.
+`scripts/focused-ui-smoke.py` predates the dashboard's tab links and no longer
+matches the seller UI.
+
 ### API contract checks
 
 `session-contract-smoke-test.mjs` covers what neither the Vitest suite nor a
@@ -110,8 +127,8 @@ browser that made the booking.
 ## Language Test
 
 1. On `/`, switch the header language control to English and confirm the whole
-   page changes, including the slot count, the local-invoice checkbox and the
-   validation messages.
+   page changes, including the slot count, the booking lengths, the store field
+   and the validation messages.
 2. Reload. The choice is a cookie, so it must survive, and view source should
    show `<html lang="en">` on the first response rather than switching after
    paint.
@@ -144,12 +161,14 @@ The customer screens are in Spanish.
 
 1. Run `npm run dev` and open `http://localhost:3000`.
 2. Select a date between today and the end of next month.
-3. Confirm all hourly Nike Sawgrass slots are shown.
-4. Confirm booked slots are disabled and labelled `Reservado`.
-5. Enter customer details and complete the 20 USD Stripe Test Mode Checkout.
-6. Confirm the verified webhook changes the reservation from pending to confirmed.
-7. Abandon another checkout and confirm the slot becomes available after 15 minutes.
-8. Confirm no local-invoice checkbox is offered. The option was withdrawn (see entry 15 in [Specification decisions](SPEC_DECISIONS.md)); bookings made before that still show the badge in the seller session header and the Colombia delivery list.
+3. Confirm half-hour start times are shown, labelled Florida time, and that switching between 1 h, 1 h 30 and 2 h greys out starts that do not fit before closing.
+4. Confirm booked slots are disabled and labelled `Reservado`, and that the half hour inside someone else's booking cannot start a new one.
+5. Confirm the "Outlet o tienda" field inside "Cita seleccionada" is required, and that the store typed appears on the order page and in the seller panel.
+6. Enter customer details and complete the Stripe Test Mode Checkout for the length chosen (20, 30 or 40 USD).
+7. Confirm the verified webhook changes the reservation from pending to confirmed.
+8. Abandon another checkout and confirm the slot becomes available after 15 minutes.
+9. Confirm the confirmation email arrives with the calendar invitation (needs `RESEND_API_KEY`).
+10. Confirm no local-invoice checkbox is offered. The option was withdrawn (see entry 15 in [Specification decisions](SPEC_DECISIONS.md)); bookings made before that still show the badge in the seller session header and the Colombia delivery list.
 
 ## Manual Seller Dashboard Test
 
@@ -174,6 +193,41 @@ The customer screens are in Spanish.
 6. Create the individual shipment, attach it to a consolidated box, and verify its digital manifest.
 7. Sign in as Colombia staff, receive the box, record the final payment, and confirm seller/customer status updates.
 8. Confirm the customer invoice labels the tax and commission percentages that the session actually stored, not a hard-coded 7/15.
+
+## Extension Test
+
+1. Book two back-to-back customers, A at 3:00 and B at 4:30, each for an hour.
+2. In A's live session press **Extend 30 min**. Confirm the call time reads 1 h
+   30 and the order summary gains "Extra time 30 min · $10.00".
+3. Press it again and confirm it is refused, because B holds 4:30.
+4. On the booking page confirm 4:00 can no longer be chosen.
+5. Add a product and close the session; confirm the customer's invoice shows the
+   extra time as its own line and the total includes it.
+
+`src/lib/store/half-hour-slots.test.ts` pins the booking and extension rules.
+
+## Extra Time Without a Purchase
+
+1. Start a session, press **Extend 30 min**, add nothing, and press **End
+   session without a purchase**. Confirm the dialog says the extra time is still
+   charged.
+2. Confirm the seller panel shows "Extra time only" with no shipment button.
+3. Open the customer link: one payment of $10.00, no delivery address form, and
+   a three-step timeline with no shipping steps.
+4. Press **Pagar**: Stripe opens a checkout for "Brash3D extra session time".
+5. End another session without extending it and confirm it is simply cancelled.
+
+`src/lib/store/extra-time-only.test.ts` pins this, including that it earns no
+referral reward and never gets a shipment.
+
+## Booking Email Test
+
+1. Set `RESEND_API_KEY`, and `EMAIL_STAFF_TO` to your own address.
+2. Complete a booking. Confirm the customer email arrives with the order link,
+   Florida and Colombia times, length, store and amount, and that the calendar
+   invitation opens in Google Calendar, Outlook or Apple Calendar.
+3. Confirm the seller copy arrives and its **Open live session** button, while
+   signed out, signs in and lands on that session rather than the dashboard.
 
 ## Duplicate Payment Test
 

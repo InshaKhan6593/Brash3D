@@ -17,8 +17,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Brash3D · Compras en vivo",
-  description: "Reserva y sigue tu sesión de compra en vivo desde el outlet con Brash3D.",
+  title: "Mi Global Shopper · Compras en vivo",
+  description: "Reserva y sigue tu sesión de compra en vivo desde el outlet o tienda de tu interés con Mi Global Shopper, una marca de Brash3D.",
 };
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {

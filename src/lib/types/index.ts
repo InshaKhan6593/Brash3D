@@ -53,6 +53,8 @@ export interface Reserva {
   hora: string
   estado: ReservaEstado
   montoReserva: number
+  /** How long the call was booked for, in minutes (60, 90, 120...). */
+  duracionMinutos?: number
   requiresLocalInvoice?: boolean
   paymentIntentId?: string
   holdExpiresAt?: Date
@@ -74,6 +76,12 @@ export interface SesionCompra {
   horaProgramada?: string
   bookingEstado: ReservaEstado
   bookingFee: number
+  /** The call's length, including any extension added by the seller. */
+  duracionMinutos: number
+  /** Minutes the seller added during the call. */
+  minutosExtension: number
+  /** What those minutes add to the invoice, at the price they were sold for. */
+  cargoExtension: number
   requiresLocalInvoice?: boolean
   outlet?: string
   fechaFin?: Date

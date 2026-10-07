@@ -47,8 +47,9 @@ function toIsoDate(value: string | Date): string {
 }
 
 /**
- * An hour string is valid only on the hour, because a slot is a whole hour and
- * the database enforces the same rule. Rejecting "09:30" here gives the admin a
+ * An hour string is valid only on the hour: opening hours are whole hours (the
+ * half-hour slots are generated inside them) and the database enforces the
+ * same rule. Rejecting "09:30" here gives the admin a
  * readable message instead of a constraint violation.
  */
 export function parseHour(value: unknown, field: string): string {

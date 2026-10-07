@@ -12,7 +12,7 @@ export const runtime = "nodejs"
  * copy (`max-age=0`), so each visit still asks the edge.
  *
  * Five seconds is safe because the slot list only guides the choice; it never
- * decides it. `createBookingWithSession` locks the slot row, so a customer who
+ * decides it. `createBookingWithSession` locks every slot row it spans, so a customer who
  * picks a slot booked in the last few seconds is told it is taken rather than
  * double-booked -- the stress test raced ten bookings at one slot and got one.
  *
