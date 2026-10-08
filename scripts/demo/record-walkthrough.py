@@ -111,8 +111,15 @@ def config(title, url, steps):
             {"burn_subtitles": {}},
             {"optimize": {"format": "mp4"}},
         ],
-        "output": {"filename": f"{title}.mp4", "formats": ["mp4"]},
+        "output": {"filename": f"{title}.mp4", "formats": ["mp4"], "branding": False},
     }
+
+
+def usd(amount):
+    """Stripe offers the viewer's local currency first (rupees, from where the
+    recording runs); pick the dollar price. Skipped if Stripe shows only USD."""
+    # Labelled "US$20.00" or "$20.00" depending on locale, so match the figure.
+    return {"action": "click", "locator": css(f'button:has-text("{amount}")'), "wait": 1.5, "on_error": "skip"}
 
 
 def login(email, password, destination, narration):
@@ -146,8 +153,19 @@ def chapter_booking(state):
             "Completa sus datos. Su correo recibe la confirmación con la invitación de calendario, y su WhatsApp el enlace de su pedido.", 0.5),
         say({"action": "click", "locator": text("Pagar 20 USD y reservar"), "wait": 4.0},
             "Paga la reserva con Stripe, de forma segura. El horario queda apartado mientras paga."),
+        usd("20.00"),
         say({"action": "pause", "wait": 2.0},
             "Cuando el pago se confirma, la cita queda reservada para él."),
+    ])
+
+
+def chapter_whatsapp(state):
+    page = state["whatsapp_page"]
+    return config("01a WhatsApp de confirmacion", page, [
+        say({"action": "navigate", "url": page, "wait": 2.0},
+            "Apenas se confirma el pago, el cliente recibe la confirmación por WhatsApp, con la fecha, la hora y la tienda."),
+        say({"action": "hover", "locator": css("img"), "wait": 2.0},
+            "El botón abre su pedido en vivo, sin descargar ninguna aplicación. Por este mismo chat recibe cada producto y su factura."),
     ])
 
 
@@ -219,6 +237,7 @@ def chapter_pay(state):
             "Confirma su dirección de entrega en Colombia.", 0.5),
         say({"action": "click", "locator": css('button:has-text("Continuar y pagar")'), "wait": 4.0},
             "Y paga la parte inicial con Stripe."),
+        usd("135.76"),
         say({"action": "pause", "wait": 2.0},
             "Una vez confirmado el pago, su dirección queda fija y el pedido pasa a envío."),
     ])
@@ -356,6 +375,32 @@ def confirm_booking(db, state):
     db.commit()
     state["customer_url"] = f"{BASE_URL}/session/{state['session_id']}?token={token}"
     render_email(db, state)
+    render_whatsapp(state)
+
+
+WHATSAPP_SHOT = ROOT / "output" / "demo" / "whatsapp" / "01-confirmacion-reserva.png"
+
+
+def render_whatsapp(state):
+    """The real booking confirmation as it arrived on a phone, captured from a
+    live booking (output/demo/whatsapp/01-confirmacion-reserva.png)."""
+    if not WHATSAPP_SHOT.exists():
+        raise RuntimeError(f"Missing the WhatsApp screenshot {WHATSAPP_SHOT}")
+    run_dir = state["run_dir"]
+    shutil.copy(WHATSAPP_SHOT, run_dir / WHATSAPP_SHOT.name)
+    page = run_dir / "whatsapp-confirmacion.html"
+    page.write_text(f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><title>WhatsApp</title>
+<style>
+  body {{ margin: 0; height: 100vh; display: grid; place-items: center; background: #0b141a;
+         font: 15px system-ui, sans-serif; color: #e9edef }}
+  figure {{ margin: 0; text-align: center }}
+  img {{ width: 600px; border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.6) }}
+  figcaption {{ margin-top: 18px; color: #8696a0 }}
+</style></head><body>
+<figure><img src="{WHATSAPP_SHOT.name}" alt="Confirmación por WhatsApp">
+<figcaption>Mensaje real recibido en WhatsApp al confirmar la reserva</figcaption></figure>
+</body></html>""", encoding="utf-8")
+    state["whatsapp_page"] = f"http://127.0.0.1:{state['email_server'].server_port}/{page.name}"
 
 
 def render_email(db, state):
@@ -465,6 +510,7 @@ app()
 
 CHAPTERS = [
     (chapter_booking, confirm_booking),
+    (chapter_whatsapp, None),
     (chapter_email, None),
     (chapter_live, None),
     (chapter_cart, None),
