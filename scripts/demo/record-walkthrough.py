@@ -360,6 +360,23 @@ def cleanup(db):
     db.commit()
 
 
+# DemoDSL starts its Remotion renderer as a bare "npx", which Windows only
+# finds as npx.cmd (Git Bash's extensionless npx is not runnable). Run its CLI
+# with that one name resolved.
+DEMODSL = """
+import shutil, subprocess, sys
+from demodsl.cli import app
+_popen = subprocess.Popen.__init__
+def _init(self, args, *rest, **kw):
+    if sys.platform == "win32" and isinstance(args, (list, tuple)) and args and args[0] == "npx":
+        args = [shutil.which("npx.cmd") or "npx", *args[1:]]
+    _popen(self, args, *rest, **kw)
+subprocess.Popen.__init__ = _init
+sys.argv[0] = "demodsl"
+app()
+"""
+
+
 CHAPTERS = [
     (chapter_booking, confirm_booking),
     (chapter_live, None),
@@ -387,12 +404,23 @@ def main():
     print(f"Recording into {run_dir} (appointment {state['date']} {START_TIME})")
     videos = []
     db = psycopg.connect(DATABASE_URL)
+    # Repeated recordings book from the same address and hit the 10-per-hour
+    # booking limit; start each run with a clear counter.
+    with db.cursor() as cur:
+        cur.execute("DELETE FROM request_rate_limits WHERE key LIKE 'booking:%'")
+    db.commit()
     try:
         for number, (build, after) in enumerate(CHAPTERS, start=1):
             cfg = build(state)
             path = run_dir / f"chapter-{number:02d}.yaml"
             path.write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
-            command = ["demodsl", "run", str(path), "-o", str(run_dir / f"chapter-{number:02d}")]
+            if not args.skip_voice:
+                # Stretch each step's wait to its real spoken length, or the
+                # narration runs past the end of the recorded clip.
+                subprocess.run([sys.executable, "-c", DEMODSL, "estimate", str(path), "--synthesize", "--fix"],
+                               env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}, check=True,
+                               stdout=subprocess.DEVNULL)
+            command = [sys.executable, "-c", DEMODSL, "run", str(path), "-o", str(run_dir / f"chapter-{number:02d}")]
             if args.skip_voice:
                 command.append("--skip-voice")
             if args.turbo:
