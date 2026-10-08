@@ -208,7 +208,7 @@ export const MESSAGES = {
       rewardsNone: "Tu próxima recompensa cubrirá automáticamente los 20 USD de la reserva.",
       timeline: {
         booked: "Reserva confirmada",
-        bookedBody: "Tu cita con Brash3D está apartada",
+        bookedBody: "Tu cita con Mi Global Shopper está apartada",
         shopping: "Compra en vivo",
         shoppingClosed: "Tu comprador personal cerró la sesión",
         shoppingLive: "Tu comprador personal está agregando productos",
@@ -533,7 +533,7 @@ export const MESSAGES = {
       rewardsNone: "Your next reward automatically covers the 20 USD booking fee.",
       timeline: {
         booked: "Booking confirmed",
-        bookedBody: "Your Brash3D appointment is held",
+        bookedBody: "Your Mi Global Shopper appointment is held",
         shopping: "Live shopping",
         shoppingClosed: "Your personal shopper closed the session",
         shoppingLive: "Your personal shopper is adding products",

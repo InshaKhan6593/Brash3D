@@ -302,7 +302,7 @@ describe("invoice at close", () => {
 
   it("lists every product, the tax, the commission, the total and the split", () => {
     expect(invoiceMessage(closedSession(), LINK)).toBe([
-      "Brash3D: your invoice is ready 🧾",
+      "Mi Global Shopper: your invoice is ready 🧾",
       "",
       "• Tenis Nike Pegasus — $95.00",
       "• 2 x Medias — $68.00",
@@ -342,7 +342,7 @@ describe("invoice at close", () => {
   it("writes Spanish by default", () => {
     delete process.env.WHATSAPP_MESSAGE_LOCALE
     const text = invoiceMessage(closedSession(), LINK)
-    expect(text).toContain("Brash3D: tu factura está lista")
+    expect(text).toContain("Mi Global Shopper: tu factura está lista")
     expect(text).toContain("Impuesto Florida (7%): $11.41")
     expect(text).toContain("Comisión Brash3D (15%): $24.45")
     expect(text).toContain("Pago inicial (65%): $129.26")

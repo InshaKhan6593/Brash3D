@@ -61,9 +61,9 @@ const ES: WhatsAppCopy = {
   productAdded: (label, amount) => `Agregado a tu carrito: ${label} — $${amount} USD`,
   productRemoved: (label) => `Quitado de tu carrito: ${label}`,
   productUpdated: (label, amount) => `Actualizado en tu carrito: ${label} — $${amount} USD`,
-  updatesEnabled: "Brash3D: listo. Te enviaremos aquí cada producto que agreguemos a tu carrito.",
+  updatesEnabled: "Mi Global Shopper: listo. Te enviaremos aquí cada producto que agreguemos a tu carrito.",
   bookingConfirmation: (name, when, outlet, link) => [
-    `Hola ${name}, tu sesión de compra en vivo con Brash3D está confirmada.`,
+    `Hola ${name}, tu sesión de compra en vivo con Mi Global Shopper está confirmada.`,
     "",
     `Cita: ${when}`,
     `Outlet: ${outlet}`,
@@ -72,7 +72,7 @@ const ES: WhatsAppCopy = {
     link,
   ].join("\n"),
   invoice: (invoice) => [
-    "Brash3D: tu factura está lista 🧾",
+    "Mi Global Shopper: tu factura está lista 🧾",
     "",
     ...invoiceLines(invoice.lines),
     "",
@@ -102,9 +102,9 @@ const EN: WhatsAppCopy = {
   productAdded: (label, amount) => `Added to your cart: ${label} — $${amount} USD`,
   productRemoved: (label) => `Removed from your cart: ${label}`,
   productUpdated: (label, amount) => `Updated in your cart: ${label} — $${amount} USD`,
-  updatesEnabled: "Brash3D: done. We will send every product we add to your cart here.",
+  updatesEnabled: "Mi Global Shopper: done. We will send every product we add to your cart here.",
   bookingConfirmation: (name, when, outlet, link) => [
-    `Hi ${name}, your Brash3D live shopping session is confirmed.`,
+    `Hi ${name}, your Mi Global Shopper live shopping session is confirmed.`,
     "",
     `Appointment: ${when}`,
     `Outlet: ${outlet}`,
@@ -113,7 +113,7 @@ const EN: WhatsAppCopy = {
     link,
   ].join("\n"),
   invoice: (invoice) => [
-    "Brash3D: your invoice is ready 🧾",
+    "Mi Global Shopper: your invoice is ready 🧾",
     "",
     ...invoiceLines(invoice.lines),
     "",

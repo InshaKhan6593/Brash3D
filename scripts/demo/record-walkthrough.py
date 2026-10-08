@@ -29,6 +29,7 @@ customer and is deleted at the end unless --keep is given.
 import argparse
 import functools
 import hashlib
+import hmac
 import http.server
 import json
 import os
@@ -59,12 +60,15 @@ STAMP = str(int(time.time()))
 CUSTOMER = {
     "name": "Camila Rodríguez",
     "email": f"fixture+demo-{STAMP}@brash3d.test",
-    "phone": f"300 555 {STAMP[-4:]}",
+    # A real WhatsApp number (with its +country code) makes the app send the
+    # booking, product and invoice messages to that phone for real.
+    "phone": os.environ.get("DEMO_WHATSAPP_PHONE") or f"300 555 {STAMP[-4:]}",
     "city": "Bogotá",
     "store": "Nike, Sawgrass Mills",
     "address": "Calle 93 #11-26, apartamento 502",
 }
 PRODUCTS = [("Tenis Nike Pegasus", "95"), ("Chaqueta Windrunner", "68")]
+WHATSAPP_LIVE = bool(os.environ.get("DEMO_WHATSAPP_PHONE"))
 START_TIME = "3:00 PM"  # Florida time on the booking grid
 
 VIEWPORT = {"width": 1280, "height": 720}
@@ -96,7 +100,9 @@ def config(title, url, steps):
             "browser": "chrome",
             "viewport": VIEWPORT,
             "on_error": "fail",
-            "steps": steps,
+            # A silent tail: the narration timing varies run to run, and audio
+            # running past the last recorded frame fails the whole render.
+            "steps": steps + [{"action": "pause", "wait": 4.0}],
         }],
         "pipeline": [
             {"generate_narration": {}},
@@ -293,6 +299,30 @@ def pick_date():
     raise RuntimeError(f"No day with {START_TIME} free for an hour")
 
 
+def post_checkout_completed(checkout_session_id, payment_intent_id, metadata):
+    """Delivers a signed checkout.session.completed event to the local app,
+    as Stripe would after a paid checkout. Returns the app's outcome."""
+    secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
+    if not secret:
+        raise RuntimeError("Set STRIPE_WEBHOOK_SECRET (the local app's) to send real WhatsApp messages")
+    payload = json.dumps({
+        "id": f"evt_demo_{STAMP}_{checkout_session_id[-8:]}",
+        "object": "event",
+        "type": "checkout.session.completed",
+        "data": {"object": {
+            "id": checkout_session_id, "object": "checkout.session",
+            "payment_intent": payment_intent_id, "payment_status": "paid", "metadata": metadata,
+        }},
+    }).encode()
+    timestamp = str(int(time.time()))
+    signature = hmac.new(secret.encode(), f"{timestamp}.".encode() + payload, hashlib.sha256).hexdigest()
+    request = urllib.request.Request(f"{BASE_URL}/api/stripe/webhook", data=payload, method="POST", headers={
+        "Content-Type": "application/json", "Stripe-Signature": f"t={timestamp},v1={signature}",
+    })
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.load(response).get("outcome")
+
+
 def confirm_booking(db, state):
     with db.cursor() as cur:
         cur.execute("""
@@ -304,11 +334,19 @@ def confirm_booking(db, state):
         if not row:
             raise RuntimeError("The booking chapter did not create a booking")
         state["session_id"], booking_id = row
-        cur.execute("UPDATE reservas SET estado = 'confirmada', confirmed_at = now() WHERE id = %s::uuid", (booking_id,))
-        cur.execute("""
-            INSERT INTO payment_logs (payment_intent_id, reserva_id, monto, tipo_pago, estado, metadata)
-            SELECT %s, id, monto_reserva, 'booking_fee', 'succeeded', '{"demo": true}'::jsonb FROM reservas WHERE id = %s::uuid
-        """, (f"pi_demo_{STAMP}_booking", booking_id))
+        if WHATSAPP_LIVE:
+            # Through the app's own webhook, so the real WhatsApp confirmation
+            # (and email, when configured) goes out exactly as after a payment.
+            cur.execute("SELECT checkout_session_id FROM reservas WHERE id = %s::uuid", (booking_id,))
+            outcome = post_checkout_completed(cur.fetchone()[0], f"pi_demo_{STAMP}_booking", {})
+            if outcome != "confirmed":
+                raise RuntimeError(f"The booking webhook returned {outcome!r}")
+        else:
+            cur.execute("UPDATE reservas SET estado = 'confirmada', confirmed_at = now() WHERE id = %s::uuid", (booking_id,))
+            cur.execute("""
+                INSERT INTO payment_logs (payment_intent_id, reserva_id, monto, tipo_pago, estado, metadata)
+                SELECT %s, id, monto_reserva, 'booking_fee', 'succeeded', '{"demo": true}'::jsonb FROM reservas WHERE id = %s::uuid
+            """, (f"pi_demo_{STAMP}_booking", booking_id))
         # The durable link the WhatsApp and email confirmations would carry.
         token = secrets.token_urlsafe(32)
         cur.execute("""
