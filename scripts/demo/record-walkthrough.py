@@ -105,6 +105,9 @@ def config(title, url, steps):
             "steps": steps + [{"action": "pause", "wait": 4.0}],
         }],
         "pipeline": [
+            # The browser capture has an uneven frame rate, which makes
+            # Remotion intermittently fail with "No frame found at position".
+            {"frame_rate": {"fps": 30}},
             {"generate_narration": {}},
             {"edit_video": {}},
             {"mix_audio": {}},
@@ -391,10 +394,10 @@ def render_whatsapp(state):
     page = run_dir / "whatsapp-confirmacion.html"
     page.write_text(f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><title>WhatsApp</title>
 <style>
-  body {{ margin: 0; height: 100vh; display: grid; place-items: center; background: #0b141a;
+  body {{ margin: 0; height: 100vh; display: grid; place-items: start center; padding-top: 28px; box-sizing: border-box; background: #0b141a;
          font: 15px system-ui, sans-serif; color: #e9edef }}
   figure {{ margin: 0; text-align: center }}
-  img {{ width: 600px; border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.6) }}
+  img {{ height: 540px; width: auto; border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.6) }}
   figcaption {{ margin-top: 18px; color: #8696a0 }}
 </style></head><body>
 <figure><img src="{WHATSAPP_SHOT.name}" alt="Confirmación por WhatsApp">
@@ -561,7 +564,16 @@ def main():
             print(f"[{number}/{len(CHAPTERS)}] {cfg['metadata']['title']}", flush=True)
             # UTF-8 mode: on Windows DemoDSL otherwise reads the config in the
             # system code page, garbling every accent in the Spanish narration.
-            result = subprocess.run(command, env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+            result = subprocess.run(command, env=env)
+            # Remotion fails now and then with "No frame found at position" on a
+            # good recording. Re-render from the recorded clip (--incremental)
+            # rather than replaying the browser, which would book twice.
+            for retry in range(2):
+                if result.returncode == 0:
+                    break
+                print(f"    render failed; re-rendering from the recording (retry {retry + 1})", flush=True)
+                result = subprocess.run(command + ["--incremental"], env=env)
             if result.returncode != 0:
                 raise RuntimeError(f"Chapter {number} failed; see the DemoDSL output above")
             found = sorted((run_dir / f"chapter-{number:02d}").rglob("*.mp4"), key=lambda p: p.stat().st_mtime)
