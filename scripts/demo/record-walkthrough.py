@@ -2,7 +2,7 @@
 Records the client walkthrough video with DemoDSL: one customer's order from
 booking to delivery, narrated in Spanish, recorded against the local app.
 
-    Customer books  ->  seller runs the live session  ->  customer watches the
+    Customer books  ->  confirmation email arrives  ->  seller runs the live session  ->  customer watches the
     cart  ->  seller closes and invoices  ->  customer pays  ->  seller ships in
     a consolidated box  ->  Colombia receives, collects and delivers  ->
     customer sees the order complete.
@@ -27,12 +27,16 @@ customer and is deleted at the end unless --keep is given.
 """
 
 import argparse
+import functools
 import hashlib
+import http.server
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -138,6 +142,20 @@ def chapter_booking(state):
             "Paga la reserva con Stripe, de forma segura. El horario queda apartado mientras paga."),
         say({"action": "pause", "wait": 2.0},
             "Cuando el pago se confirma, la cita queda reservada para él."),
+    ])
+
+
+def chapter_email(state):
+    page = state["email_page"]
+    return config("01b Correo de confirmacion", page, [
+        say({"action": "navigate", "url": page, "wait": 1.5},
+            "Al confirmarse el pago, el cliente recibe este correo de Mi Global Shopper."),
+        say({"action": "pause", "wait": 1.0},
+            "Trae la invitación de calendario, para que la cita quede en su Google Calendar, Outlook o el calendario de su teléfono. El comprador personal recibe la misma invitación."),
+        say({"action": "scroll", "direction": "down", "pixels": 450, "wait": 1.5},
+            "El correo muestra la fecha y la hora en Florida y en Colombia, la duración, la tienda que eligió y lo que pagó."),
+        say({"action": "scroll", "direction": "down", "pixels": 450, "wait": 1.5},
+            "Y tiene los botones para abrir su carrito en vivo y agregar la cita al calendario."),
     ])
 
 
@@ -299,6 +317,36 @@ def confirm_booking(db, state):
         """, (state["session_id"], hashlib.sha256(token.encode()).hexdigest()))
     db.commit()
     state["customer_url"] = f"{BASE_URL}/session/{state['session_id']}?token={token}"
+    render_email(db, state)
+
+
+def render_email(db, state):
+    """The customer's confirmation email, rendered by the app's own template."""
+    with db.cursor() as cur:
+        cur.execute("""
+            SELECT r.fecha_hora, r.duracion_minutos, r.monto_reserva, r.tienda_solicitada
+            FROM reservas r JOIN sesiones_compra sc ON sc.reserva_id = r.id WHERE sc.id = %s::uuid
+        """, (state["session_id"],))
+        starts_at, minutes, amount, store = cur.fetchone()
+    run_dir = state["run_dir"]
+    data = run_dir / "email-input.json"
+    data.write_text(json.dumps({
+        "customerName": CUSTOMER["name"], "customerEmail": CUSTOMER["email"],
+        "customerPhone": CUSTOMER["phone"], "customerCity": CUSTOMER["city"],
+        "store": store, "startsAt": starts_at.isoformat(), "durationMinutes": minutes,
+        "amountPaid": float(amount), "orderUrl": state["customer_url"],
+    }, ensure_ascii=False), encoding="utf-8")
+    page = run_dir / "correo-confirmacion.html"
+    subprocess.run([shutil.which("npx.cmd") or shutil.which("npx") or "npx", "--yes", "tsx@4.19.2",
+                    str(ROOT / "scripts" / "demo" / "render-booking-email.tsx"), str(data), str(page)],
+                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    # DemoDSL only opens http(s) pages, so serve the run folder on localhost.
+    if "email_server" not in state:
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(run_dir))
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        state["email_server"] = server
+    state["email_page"] = f"http://127.0.0.1:{state['email_server'].server_port}/{page.name}"
 
 
 def confirm_initial_payment(db, state):
@@ -379,6 +427,7 @@ app()
 
 CHAPTERS = [
     (chapter_booking, confirm_booking),
+    (chapter_email, None),
     (chapter_live, None),
     (chapter_cart, None),
     (chapter_close, None),
@@ -400,7 +449,7 @@ def main():
 
     run_dir = OUT / STAMP
     run_dir.mkdir(parents=True, exist_ok=True)
-    state = {"date": pick_date()}
+    state = {"date": pick_date(), "run_dir": run_dir}
     print(f"Recording into {run_dir} (appointment {state['date']} {START_TIME})")
     videos = []
     db = psycopg.connect(DATABASE_URL)
